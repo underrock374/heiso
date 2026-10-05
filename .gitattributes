@@ -1,0 +1,29 @@
+* text=auto
+
+*.cs      text eol=crlf
+*.csproj  text eol=crlf
+*.slnx    text eol=crlf
+*.props   text eol=crlf
+*.ps1     text eol=crlf
+*.py      text eol=lf
+*.sh      text eol=lf
+
+*.gz   binary
+*.mp4  binary
+*.png  binary
+
+# ---- 公開リポジトリ(heiso)へ書き出さないもの ----
+# tools/release.ps1 は git archive を使うので、ここに書いたものは公開側に出ない。
+# 公開するもの(2026-09-28 に見直し): README・LICENSE・CHANGELOG・csharp/・docs/ の利用者向けの文書と session-format.md・testdata/video/(テストに使う)
+CLAUDE.md                   export-ignore
+.claude/                    export-ignore
+docs/tasks/                 export-ignore
+docs/spec.md                export-ignore
+docs/telemetry-field-notes.md export-ignore
+docs/development.md         export-ignore
+tools/release.ps1           export-ignore
+# 解析・開発側のツール(今は配布する理由がない)
+python/**                   export-ignore
+# テストに使う小さな動画(生成したダミー)だけ出す。実データの抜き出しは出さない
+testdata/*                  export-ignore
+testdata/video              -export-ignore

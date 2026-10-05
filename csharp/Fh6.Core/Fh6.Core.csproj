@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- UI に依存しない共通部分(パケット定義、記録ファイルの読み書き、同期計算)。ASP.NET Core を参照しないこと -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Fh6.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 画面とメッセージの訳(日本語の文 → 英語)。この 1 ファイルだけに置き、dll に埋め込む(Strings) -->
+    <EmbeddedResource Include="i18n\strings.json" LogicalName="Fh6.Core.i18n.strings.json" />
+    <!-- 画面の側で訳を引く関数。各アプリの画面のフォルダへ、ビルドのときに出す -->
+    <None Include="i18n\i18n.js" />
+  </ItemGroup>
+
+</Project>

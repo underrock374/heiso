@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="Fh6.Core/Fh6.Core.csproj" />
+  <Project Path="Fh6.Recorder/Fh6.Recorder.csproj" />
+  <Project Path="Fh6.Player/Fh6.Player.csproj" />
+  <Project Path="Fh6.Core.Tests/Fh6.Core.Tests.csproj" />
+  <Project Path="Fh6.Recorder.Tests/Fh6.Recorder.Tests.csproj" />
+</Solution>

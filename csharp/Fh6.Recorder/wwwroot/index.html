@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c2228">
+<title>HEISO Recorder</title>
+<style>
+:root {
+  --bg: #1c2228;
+  --panel: #252d35;
+  --line: #36414c;
+  --text: #e7ebee;
+  --muted: #8d99a5;
+  --rec: #e3343f;
+  --log: #3b9fd1;
+  --ok: #5fb574;
+  --warn: #e7a33e;
+  --tally: transparent;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "BIZ UDPGothic", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
+  -webkit-tap-highlight-color: transparent;
+}
+/* 画面のふちが「タリーランプ」になる。録画中は赤、ログのみは青 */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  border: 7px solid var(--tally);
+  pointer-events: none;
+  z-index: 10;
+}
+body.mode-rec { --tally: var(--rec); }
+body.mode-log { --tally: var(--log); }
+
+main {
+  display: grid;
+  gap: 32px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 22px 20px 40px;
+}
+@media (min-width: 860px) {
+  main.has-connect { grid-template-columns: minmax(0, 440px) minmax(0, 1fr); align-items: start; padding-top: 40px; }
+}
+
+.control { display: grid; gap: 18px; max-width: 440px; width: 100%; margin: 0 auto; }
+
+.signals { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; color: var(--muted); }
+.sig { display: inline-flex; align-items: center; gap: 7px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+.sig.ok .dot { background: var(--ok); }
+.sig.bad .dot { background: var(--warn); }
+.sig.ok { color: var(--text); }
+
+.main-btn {
+  justify-self: center;
+  width: min(62vw, 230px); aspect-ratio: 1;
+  border-radius: 50%;
+  border: 3px solid var(--text);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  display: grid; place-content: center; justify-items: center; gap: 6px;
+  cursor: pointer;
+  margin: 10px 0 4px;
+  transition: transform .08s;
+}
+.main-btn:active { transform: scale(.97); }
+.main-btn:disabled { opacity: .55; cursor: default; }
+.main-btn:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--log); outline-offset: 3px; }
+.main-btn .core { width: 54px; height: 54px; border-radius: 50%; background: var(--rec); }
+.main-btn .top { font-size: 19px; font-weight: 700; letter-spacing: .04em; }
+.main-btn .sub { font-size: 13px; color: var(--muted); }
+body.mode-rec .main-btn, body.mode-log .main-btn { border-color: var(--tally); }
+body.running .main-btn .core { width: 30px; height: 30px; border-radius: 5px; background: var(--text); }
+body.running .main-btn .top { font-size: 40px; font-weight: 700; letter-spacing: .02em; line-height: 1.1; }
+.main-btn.armed { background: var(--rec); border-color: var(--rec); }
+.main-btn.armed .sub { color: var(--text); }
+.main-btn.armed .core { background: var(--text); }
+
+.warn { margin: 0; padding: 10px 12px; border-left: 4px solid var(--warn); background: #2e2a22; font-size: 14px; }
+
+.options { display: grid; gap: 10px; }
+.toggle { display: flex; align-items: center; gap: 12px; font-size: 16px; min-height: 44px; }
+.toggle input { width: 22px; height: 22px; accent-color: var(--rec); }
+.toggle small { display: block; color: var(--muted); font-size: 13px; }
+.quality { display: grid; gap: 4px; font-size: 14px; color: var(--muted); }
+.quality select {
+  min-height: 44px; padding: 6px 10px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 16px;
+}
+.quality small { font-size: 13px; }
+.label-input {
+  width: 100%; min-height: 44px; padding: 8px 12px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; font: inherit;
+}
+
+.marker {
+  min-height: 56px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  font: inherit; font-size: 17px; font-weight: 700; cursor: pointer;
+}
+.marker:disabled { color: var(--muted); cursor: default; }
+.marker:not(:disabled):active { background: var(--line); }
+
+.live { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 0; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.live div { background: var(--bg); padding: 10px 12px; }
+.live dt { font-size: 12px; color: var(--muted); }
+.live dd { margin: 0; font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.last { font-size: 14px; color: var(--muted); }
+.last h2 { font-size: 14px; margin: 0 0 4px; color: var(--text); }
+.last p { margin: 0; word-break: break-all; }
+
+.connect { display: grid; gap: 14px; justify-items: start; max-width: 460px; }
+.connect h2 { margin: 0; font-size: 24px; letter-spacing: .02em; }
+.qr { background: #fff; padding: 14px; border-radius: 6px; line-height: 0; }
+.qr svg { width: 260px; height: 260px; display: block; }
+.url { margin: 0; font-size: 15px; word-break: break-all; }
+.connect label { font-size: 14px; color: var(--muted); display: grid; gap: 4px; }
+.connect select { min-height: 40px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; padding: 4px 8px; }
+.hint { margin: 0; font-size: 14px; color: var(--muted); max-width: 40em; }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  transform: translate(-50%, 16px); opacity: 0;
+  background: var(--text); color: var(--bg); font-weight: 700;
+  padding: 10px 18px; border-radius: 999px; z-index: 20;
+  transition: opacity .15s, transform .15s; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.fatal { max-width: 440px; margin: 60px auto; padding: 0 20px; }
+
+/* 確認カード(車両・コースの登録) */
+.prompts { display: grid; gap: 14px; }
+.prompts:empty { display: none; }
+.card { display: grid; gap: 10px; padding: 14px; background: var(--panel); border: 2px solid var(--warn); border-radius: 12px; }
+.card h2 { margin: 0; font-size: 17px; }
+.card h2 small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 6px; }
+.card p { margin: 0; font-size: 14px; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 13px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+.chip.ok { border-color: var(--ok); color: var(--ok); }
+.card label { display: grid; gap: 4px; font-size: 14px; color: var(--muted); }
+.card input, .card select {
+  min-height: 44px; padding: 6px 10px; width: 100%;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 16px;
+}
+.card .row { display: flex; gap: 10px; }
+.card .row button { flex: 1; }
+.btn {
+  min-height: 48px; padding: 8px 14px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  font: inherit; font-size: 16px; cursor: pointer;
+}
+.btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 700; }
+.btn:disabled { opacity: .55; cursor: default; }
+.card .err { color: var(--warn); }
+.card .err:empty { display: none; }
+.car-state { display: grid; gap: 8px; }
+.variant { justify-self: start; min-height: 40px; font-size: 14px; }
+.card.plain { border: 1px solid var(--line); }
+.lastrace .sum { font-size: 15px; color: var(--text); }
+.lastrace .sum small { display: block; color: var(--muted); font-size: 13px; }
+.recent { font-size: 14px; color: var(--muted); }
+.recent h2 { font-size: 14px; margin: 0 0 6px; color: var(--text); }
+.recent ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.recent li { display: grid; grid-template-columns: 3.2em 1fr; gap: 8px; }
+.recent time { color: var(--muted); }
+.recent span { color: var(--text); overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body>
+<main id="main">
+  <section class="control" aria-label="記録の操作">
+    <div class="signals">
+      <span class="sig" id="sigTel"><span class="dot"></span><span id="telText" data-i18n>テレメトリを確認中</span></span>
+      <span class="sig" id="sigObs"><span class="dot"></span><span id="obsText" data-i18n>OBSを確認中</span></span>
+    </div>
+
+    <button class="main-btn" id="mainBtn" disabled>
+      <span class="core" aria-hidden="true"></span>
+      <span class="top" id="mainTop" data-i18n>記録開始</span>
+      <span class="sub" id="mainSub"></span>
+    </button>
+
+    <p class="warn" id="warn" hidden></p>
+    <div class="prompts" id="prompts"></div>
+
+    <div class="options" id="options">
+      <label class="toggle"><input type="checkbox" id="video" checked>
+        <span><span data-i18n>OBSで録画する</span><small id="videoHint"></small></span></label>
+      <label class="quality" id="qualityBox"><span data-i18n>録画の画質</span>
+        <select id="quality"></select>
+        <small id="qualityHint"></small>
+      </label>
+      <label class="quality" id="sceneBox"><span data-i18n>録画するシーン</span>
+        <select id="scene"></select>
+        <small id="sceneHint"></small>
+      </label>
+      <input class="label-input" id="label" placeholder="メモ(任意) 例: 瑠璃光寺 AutoDrive" data-i18n-placeholder maxlength="80" autocomplete="off">
+    </div>
+
+    <button class="marker" id="markerBtn" disabled data-i18n>マーカーを打つ</button>
+
+    <dl class="live">
+      <div><dt data-i18n>ゲームの状態</dt><dd id="lvState">—</dd></div>
+      <div><dt data-i18n>速度</dt><dd id="lvSpeed">—</dd></div>
+      <div><dt data-i18n>車</dt><dd id="lvCar">—</dd></div>
+      <div><dt data-i18n>記録した行</dt><dd id="lvRows">—</dd></div>
+      <div><dt data-i18n>セッティング</dt><dd id="lvSetup">—</dd></div>
+      <div><dt data-i18n>コース</dt><dd id="lvCourse">—</dd></div>
+    </dl>
+    <div class="car-state">
+      <div class="chips" id="carChips"></div>
+      <button class="btn variant" id="variantBtn" disabled data-i18n>セッティングを変えた(PI は同じ)</button>
+    </div>
+    <section class="card plain lastrace" id="lastRace" hidden>
+      <h2 data-i18n>直前のレース</h2>
+      <p class="sum" id="lastRaceSum"></p>
+      <button class="btn variant" id="lastRaceEdit" data-i18n>コース名・車名を直す</button>
+      <div id="lastRaceForm" hidden></div>
+    </section>
+    <section class="recent" id="recent" hidden>
+      <h2 data-i18n>最近のできごと</h2>
+      <ul id="recentList"></ul>
+    </section>
+
+    <section class="last" id="last" hidden>
+      <h2 data-i18n>前回の記録</h2>
+      <p id="lastText"></p>
+    </section>
+  </section>
+
+  <aside class="connect" id="connect" hidden aria-label="スマホで開く">
+    <h2 data-i18n>スマホで読み取る</h2>
+    <div class="qr" id="qr"></div>
+    <p class="url" id="url"></p>
+    <label><span data-i18n>PCのアドレス</span>
+      <select id="ipSel"></select>
+    </label>
+    <p class="hint" data-i18n>スマホをPCと同じWi-Fiにつないでから読み取ってください。開けないときは、Windowsのファイアウォールでこのアプリの「プライベートネットワーク」を許可してください。</p>
+  </aside>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="/i18n-data.js"></script>
+<script src="/i18n.js"></script>
+<script src="/qrcode.js"></script>
+<script>
+"use strict";
+const K = new URLSearchParams(location.search).get("k") || "";
+const $ = id => document.getElementById(id);
+document.documentElement.lang = i18nLang;
+applyI18n();
+document.querySelector("section.control").setAttribute("aria-label", t("記録の操作"));
+$("connect").setAttribute("aria-label", t("スマホで開く"));
+let status = null, busy = false, armedTimer = null, pollTimer = null;
+
+async function api(path, body) {
+  const init = { headers: { "X-Key": K } };
+  if (body !== undefined) {
+    init.method = "POST";
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, init);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error || `HTTP ${r.status}`); e.status = r.status; throw e; }
+  return j;
+}
+
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  const mm = String(m).padStart(2, "0"), ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+const STATE_NAMES = { race: t("レース中"), freeroam: t("フリーローム"), idle: t("停車中"), menu: t("メニュー/ロード"), none: t("受信なし") };
+// 速度(元は km/h)。単位はアプリの設定(appsettings の SpeedUnit。自動なら Windows の地域)で決まり、status.speedUnit で届く
+function fmtSpeed(kmh) {
+  if (kmh == null) return "—";
+  return status && status.speedUnit === "mph" ? `${Math.round(kmh / 1.609344)} mph` : `${Math.round(kmh)} km/h`;
+}
+const num = n => Number(n).toLocaleString("en-US");   // 数は地域の形式によらず、3 桁ごとにカンマ
+
+function render(s) {
+  status = s;
+  const tel = s.telemetry, obs = s.obs, ses = s.session;
+  const running = s.state === "running";
+  const transitioning = s.state === "starting" || s.state === "stopping";
+
+  // 信号
+  const telOk = tel.listening && tel.hz > 0;
+  $("sigTel").className = "sig " + (telOk ? "ok" : "bad");
+  // UDP の送り直し(パススルー。SimHub などと併用するとき)。設定の誤りは赤で出す
+  const fwd = tel.forward;
+  const fwdText = !fwd ? "" : fwd.error ? `${t(" ・ ")}${fwd.error}`
+    : t(" ・ 転送 {targets}{failed}", { targets: fwd.targets.join(", "), failed: fwd.failures ? t("(送れなかった {n})", { n: num(fwd.failures) }) : "" });
+  $("telText").textContent = (tel.error ? tel.error
+    : telOk ? t("テレメトリ {hz}Hz", { hz: Math.round(tel.hz) })
+    : t("テレメトリ 受信なし(UDP {port})", { port: tel.port })) + fwdText;
+  $("telText").title = fwd && !fwd.error ? t("送り直した数: {n}", { n: num(fwd.packets) }) : "";
+  if (fwd && fwd.error) $("sigTel").className = "sig bad";
+  $("sigObs").className = "sig " + (obs.connected ? "ok" : "bad");
+  $("obsText").textContent = !obs.enabled ? t("OBS連携なし")
+    : obs.connected ? (obs.recording ? t("OBS 録画中") : t("OBS 接続済み"))
+    : t("OBS 未接続");
+  $("sigObs").title = obs.error || "";
+
+  // タリー
+  document.body.classList.toggle("running", running || s.state === "stopping");
+  document.body.classList.toggle("mode-rec", !!(ses && ses.videoActive));
+  document.body.classList.toggle("mode-log", !!(ses && !ses.videoActive));
+
+  // メインボタン
+  const btn = $("mainBtn");
+  btn.disabled = busy || transitioning;
+  if (s.state === "starting") { $("mainTop").textContent = t("開始中"); $("mainSub").textContent = ""; }
+  else if (s.state === "stopping") { $("mainTop").textContent = t("保存中"); $("mainSub").textContent = t("録画ファイルを閉じています"); }
+  else if (running && ses) {
+    $("mainTop").textContent = fmtTime(ses.elapsedSec);
+    if (!btn.classList.contains("armed"))
+      $("mainSub").textContent = ses.videoActive ? t("録画+ログ ・ タップで停止") : t("ログのみ ・ タップで停止");
+  } else {
+    btn.classList.remove("armed");
+    $("mainTop").textContent = t("記録開始");
+    $("mainSub").textContent = $("video").checked && obs.connected ? t("録画+ログ") : t("ログのみ");
+  }
+
+  // 警告
+  const warn = s.warning || (!running && obs.enabled && !obs.connected && $("video").checked ? (obs.error || t("OBSに接続できません")) : null)
+    || (s.race && s.race.registryWarning);
+  $("warn").hidden = !warn;
+  $("warn").textContent = warn || "";
+
+  // オプション
+  const videoBox = $("video");
+  videoBox.disabled = running || transitioning || !obs.connected;
+  $("videoHint").textContent = !obs.enabled ? t("設定でOBS連携が無効です")
+    : !obs.connected ? t("OBSにつながると選べます。今はログだけ記録します") : "";
+  $("label").disabled = running || transitioning;
+  renderQuality(s, running || transitioning);
+  renderScene(s, running || transitioning);
+  $("markerBtn").disabled = !running;
+  $("markerBtn").textContent = running && ses && ses.markers ? t("マーカーを打つ({n})", { n: ses.markers }) : t("マーカーを打つ");
+
+  // ライブ値
+  let st = STATE_NAMES[tel.state] || "—";
+  if (tel.state === "race" && tel.racePos) st += t(" {pos}位", { pos: tel.racePos });
+  $("lvState").textContent = st;
+  $("lvSpeed").textContent = fmtSpeed(tel.speedKmh);
+  renderRace(s.race, tel);
+  $("lvRows").textContent = ses ? num(ses.rows) : "—";
+
+  // 前回
+  if (s.last) {
+    const l = s.last;
+    const sep = t(" ・ ");
+    const video = l.video ? t("動画 {file}", { file: l.video.split(/[\\/]/).pop() }) : t("動画なし{why}", { why: l.videoError ? `(${l.videoError})` : "" });
+    const sync = l.endCheckSec == null ? "" : sep + t("同期の終端誤差 {sec}秒", { sec: (l.endCheckSec >= 0 ? "+" : "") + l.endCheckSec.toFixed(2) });
+    const size = l.mbPerMin == null ? "" : sep + t("{mb} MB/分", { mb: l.mbPerMin }) + (l.quality ? `(${qualityName(l.quality)})` : "");
+    $("lastText").textContent = [l.name, fmtTime(l.durationSec), t("{n}行", { n: num(l.rows) }), t("マーカー{n}", { n: l.markers }), video].join(sep) + size + sync;
+    $("last").hidden = false;
+  }
+}
+
+// ---- 車両・コース(確認カード) ----
+const esc = v => String(v == null ? "" : v).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function renderRace(r, tel) {
+  if (!r) { $("lvCar").textContent = tel.car ? `${tel.car.class}${tel.car.pi} ${tel.car.drivetrain}` : "—"; return; }
+  const c = r.car;
+  $("lvCar").textContent = c ? (c.name || t("未登録の車両")) : "—";
+  $("lvCar").title = c ? `${c.cls}${c.pi} ${c.drive} ${t("{n}気筒", { n: c.cyl })}${t(" ・ ")}ID ${c.ordinal}` : "";
+  $("lvSetup").textContent = c ? (c.setup || t("未確定")) : "—";
+  $("lvCourse").textContent = r.course ? r.course.name + (r.course.kind ? `(${r.kinds[r.course.kind] || r.course.kind})` : "") : "—";
+  $("carChips").innerHTML = c
+    ? [`${c.cls} ${c.pi}`, c.drive, t("{n}気筒", { n: c.cyl })].map(x => `<span class="chip">${esc(x)}</span>`).join("")
+      + (c.confirmed ? `<span class="chip ok">${t("確定済み")}</span>` : `<span class="chip warn">${t("未確定")}</span>`)
+    : "";
+  $("variantBtn").disabled = !c;
+  renderPrompts(r);
+  renderLastRace(r);
+  $("recent").hidden = !r.recent.length;
+  $("recentList").innerHTML = r.recent.map(e => `<li><time>${esc(e.at)}</time><span>${esc(e.text)}</span></li>`).join("");
+}
+function carCard(p, r) {
+  const s = p.sig, known = p.knownName, guess = p.setups.find(x => x.id === p.guessSetup);
+  const what = p.atStart ? t("記録開始時の車両") : t("{what} が変わりました", { what: p.changed.join(t("・")) });
+  const opts = p.setups.map(x => `<option value="${esc(x.id)}"${x.id === p.guessSetup ? " selected" : ""}>${esc(x.name)}</option>`).join("")
+    + `<option value="new"${guess ? "" : " selected"}>${t("新しいセッティングとして登録")}</option>`;
+  return `<section class="card" data-pid="${p.id}">
+    <h2>${t("車両の確認")}<small>${esc(p.created)}</small></h2>
+    <div class="chips"><span class="chip warn">${esc(what)}</span><span class="chip">${esc(s.cls)} ${s.pi}</span><span class="chip">${esc(s.drive)}</span><span class="chip">${t("{n}気筒", { n: s.cyl })}</span><span class="chip">ID ${s.ordinal}</span></div>
+    <label>${known ? t("車名(登録済み)") : t("車名(未登録の車両です)")}<input name="car" list="dl-${p.id}" value="${esc(known)}" placeholder="${esc(t("例: Honda Civic Type R"))}" autocomplete="off"></label>
+    <datalist id="dl-${p.id}">${r.known.cars.map(n => `<option value="${esc(n)}">`).join("")}</datalist>
+    <label>${t("セッティング")}<select name="setupChoice">${opts}</select></label>
+    <label>${t("セッティング名")}<input name="setupName" value="${esc(guess ? guess.name : "")}" placeholder="${esc(t("例: 雨用 ソフト"))}" autocomplete="off"></label>
+    <label>${t("メモ(任意)")}<input name="note" autocomplete="off"></label>
+    <div class="row"><button class="btn primary" data-act="car">${known && guess ? t("この内容で確定") : t("登録する")}</button><button class="btn" data-act="skip">${t("あとで")}</button></div>
+    <p class="err"></p>
+  </section>`;
+}
+function courseCard(p, r) {
+  const opts = `<option value="new" selected>${t("新しいコースとして登録")}</option>`
+    + r.known.courses.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  const kinds = Object.entries(r.kinds).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  return `<section class="card" data-pid="${p.id}">
+    <h2>${t("未登録のコースでレースが始まりました")}<small>${esc(p.created)}</small></h2>
+    <p>${t("スタート地点 x {x} / z {z}。登録すると、次から自動で見分けます(グリッドが後ろでも)。", { x: p.start.x.toFixed(0), z: p.start.z.toFixed(0) })}</p>
+    <label>${t("登録先")}<select name="courseChoice">${opts}</select></label>
+    <label>${t("レース名")}<input name="name" placeholder="${esc(t("例: 瑠璃光寺クロスカントリー"))}" autocomplete="off"></label>
+    <label>${t("種類")}<select name="kind">${kinds}</select></label>
+    <label>${t("メモ(任意)")}<input name="note" autocomplete="off"></label>
+    <div class="row"><button class="btn primary" data-act="course">${t("登録する")}</button><button class="btn" data-act="skip">${t("あとで")}</button></div>
+    <p class="err"></p>
+  </section>`;
+}
+function renderPrompts(r) {
+  const box = $("prompts"), ids = r.prompts.map(p => p.id);
+  // 入力中のカードは作り直さない
+  for (const el of [...box.children]) if (!ids.includes(el.dataset.pid)) el.remove();
+  for (const p of r.prompts) {
+    if (box.querySelector(`[data-pid="${p.id}"]`)) continue;
+    box.insertAdjacentHTML("beforeend", p.type === "car" ? carCard(p, r) : courseCard(p, r));
+    const el = box.querySelector(`[data-pid="${p.id}"]`);
+    const sel = el.querySelector("[name=setupChoice]");
+    if (sel) sel.onchange = () => {
+      const o = p.setups.find(x => x.id === sel.value);
+      el.querySelector("[name=setupName]").value = o ? o.name : "";
+    };
+    const cc = el.querySelector("[name=courseChoice]");
+    if (cc) cc.onchange = () => {
+      const isNew = cc.value === "new";
+      el.querySelector("[name=name]").closest("label").hidden = !isNew;
+      el.querySelector("[name=kind]").closest("label").hidden = !isNew;
+    };
+    for (const b of el.querySelectorAll("button")) b.onclick = () => promptAction(p, el, b);
+  }
+}
+async function promptAction(p, el, btn) {
+  const err = el.querySelector(".err");
+  const v = n => { const x = el.querySelector(`[name=${n}]`); return x ? x.value : null; };
+  err.textContent = "";
+  btn.disabled = true;
+  try {
+    const act = btn.dataset.act;
+    if (act === "skip") await api("/api/dismiss", { id: p.id });
+    else if (act === "car") await api("/api/car", { id: p.id, car: v("car"), setupChoice: v("setupChoice"), setupName: v("setupName"), note: v("note") });
+    else await api("/api/course", { id: p.id, choice: v("courseChoice"), name: v("name"), kind: v("kind"), note: v("note") });
+    toast(act === "skip" ? t("あとで確認します") : t("登録しました"));
+    el.remove();
+    poll();
+  } catch (e) {
+    err.textContent = e.message;
+    btn.disabled = false;
+  }
+}
+// ---- 直前のレース(レースが終わった後・記録を止めた後でも直せる) ----
+let lastRaceEditing = false;
+function renderLastRace(r) {
+  const l = r.lastRace;
+  $("lastRace").hidden = !l;
+  if (!l) return;
+  const car = l.car ? `${l.car.name || t("未登録の車両")}${l.car.setup ? ` ${l.car.setup}` : ""}` : t("車両不明");
+  const course = l.course ? l.course.name : t("コース未登録");
+  const sep = t(" ・ ");
+  $("lastRaceSum").innerHTML = `${esc(course)}${sep}${esc(car)}`
+    + `<small>${esc([t("{time} 開始", { time: l.startedAt }), l.ended ? t("終了") : t("走行中"), l.recorded ? t("記録 {name}", { name: l.recorded }) : t("記録していないレース")].join(sep))}</small>`;
+  if (!lastRaceEditing) $("lastRaceEdit").hidden = false;
+}
+function openLastRaceForm() {
+  const r = status && status.race, l = r && r.lastRace;
+  if (!l) return;
+  lastRaceEditing = true;
+  $("lastRaceEdit").hidden = true;
+  const courseOpts = (l.course ? "" : `<option value="" selected>${t("(未登録のまま)")}</option>`)
+    + r.known.courses.map(c => `<option value="${esc(c.id)}"${l.course && l.course.id === c.id ? " selected" : ""}>${esc(c.name)}</option>`).join("")
+    + `<option value="new">${t("新しいコースとして登録")}</option>`;
+  const kinds = Object.entries(r.kinds).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  const setupOpts = l.car
+    ? (l.car.setupId ? "" : `<option value="" selected>${t("(未確定のまま)")}</option>`)
+      + l.car.setups.map(x => `<option value="${esc(x.id)}"${x.id === l.car.setupId ? " selected" : ""}>${esc(x.name)}</option>`).join("")
+      + `<option value="new">${t("新しいセッティングとして登録")}</option>`
+    : "";
+  const f = $("lastRaceForm");
+  f.innerHTML = `
+    <label>${t("コース")}<select name="courseChoice">${courseOpts}</select></label>
+    <label>${t("レース名")}<input name="courseName" value="${esc(l.course ? l.course.name : "")}" autocomplete="off"></label>
+    <label${l.course ? " hidden" : ""}>${t("種類(新しく登録するとき)")}<select name="kind">${kinds}</select></label>
+    ${l.car ? `
+    <label>${t("車名")}<input name="car" value="${esc(l.car.name)}" list="dl-lastrace" autocomplete="off"></label>
+    <datalist id="dl-lastrace">${r.known.cars.map(n => `<option value="${esc(n)}">`).join("")}</datalist>
+    <label>${t("セッティング")}<select name="setupChoice">${setupOpts}</select></label>
+    <label>${t("セッティング名")}<input name="setupName" value="${esc(l.car.setup)}" autocomplete="off"></label>` : `<p>${t("このレースは車両を検知する前に始まったため、車名は直せません。")}</p>`}
+    <p>${t("名前を変えると、登録している名前そのものが変わり、次からもその名前で出ます。")}</p>
+    <div class="row"><button class="btn primary" data-act="save">${t("保存")}</button><button class="btn" data-act="cancel">${t("やめる")}</button></div>
+    <p class="err"></p>`;
+  f.hidden = false;
+  const v = n => { const x = f.querySelector(`[name=${n}]`); return x ? x.value : null; };
+  const cc = f.querySelector("[name=courseChoice]");
+  cc.onchange = () => {
+    const c = r.known.courses.find(x => x.id === cc.value);
+    f.querySelector("[name=courseName]").value = c ? c.name : "";
+    f.querySelector("[name=kind]").closest("label").hidden = cc.value !== "new" && cc.value !== "";
+  };
+  const sc = f.querySelector("[name=setupChoice]");
+  if (sc) sc.onchange = () => {
+    const o = l.car.setups.find(x => x.id === sc.value);
+    f.querySelector("[name=setupName]").value = o ? o.name : "";
+  };
+  f.querySelector("[data-act=cancel]").onclick = closeLastRaceForm;
+  f.querySelector("[data-act=save]").onclick = async (e) => {
+    const err = f.querySelector(".err");
+    err.textContent = "";
+    e.target.disabled = true;
+    try {
+      render(await api("/api/last-race", {
+        // 「未登録のまま」「未確定のまま」で名前を入れたら、新しく登録する
+        courseChoice: v("courseChoice") || (v("courseName").trim() ? "new" : null), courseName: v("courseName"), kind: v("kind"),
+        car: v("car"), setupChoice: v("setupChoice") || ((v("setupName") || "").trim() ? "new" : null), setupName: v("setupName"),
+      }));
+      toast(l.recorded ? t("直しました(記録にも書きました)") : t("直しました"));
+      closeLastRaceForm();
+    } catch (ex) {
+      err.textContent = ex.message;
+      e.target.disabled = false;
+    }
+  };
+}
+function closeLastRaceForm() {
+  lastRaceEditing = false;
+  $("lastRaceForm").hidden = true;
+  $("lastRaceForm").innerHTML = "";
+  $("lastRaceEdit").hidden = false;
+  if (status) render(status);
+}
+$("lastRaceEdit").addEventListener("click", openLastRaceForm);
+
+$("variantBtn").addEventListener("click", async () => {
+  try {
+    render(await api("/api/variant", {}));
+    toast(t("セッティング名を入力してください"));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch (e) { toast(e.message); }
+});
+
+// 録画の画質の段階。選んだものはアプリ側(保存先フォルダ)に覚え、次の起動でも使う
+const OBS_PRESET = { id: "obs", name: t("OBS の設定のまま") };
+function qualityName(id) {
+  if (id === "obs") return OBS_PRESET.name;
+  const p = status && status.quality.presets.find(x => x.id === id);
+  return p ? p.name : id;
+}
+function renderQuality(s, locked) {
+  const sel = $("quality"), q = s.quality;
+  if (!sel.options.length) {
+    for (const p of q.presets) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      sel.appendChild(o);
+    }
+    const o = document.createElement("option");
+    o.value = OBS_PRESET.id; o.textContent = OBS_PRESET.name;
+    sel.appendChild(o);
+  }
+  // OBS にプロファイルがまだ無い段階は「未作成」と出す
+  for (const p of q.presets) {
+    const o = sel.querySelector(`option[value="${p.id}"]`);
+    o.textContent = t("{name} ・ {height}p {fps}fps ・ 約 {mb} MB/分", { name: p.name, height: p.height, fps: p.fps, mb: p.mbPerMin }) + (p.ready === false ? t("(OBS に未作成)") : "");
+  }
+  const ses = s.session;
+  const current = ses && ses.quality ? ses.quality : q.selected;
+  if (document.activeElement !== sel) sel.value = current;
+  const videoOn = $("video").checked && s.obs.connected;
+  sel.disabled = locked || !videoOn;
+  $("qualityBox").hidden = !s.obs.enabled;
+  const p = q.presets.find(x => x.id === sel.value);
+  $("qualityHint").textContent = ses && ses.quality
+    ? (ses.qualityApplied ? t("この画質で録画中(終わったら OBS のプロファイルを元に戻します)") : t("OBS の設定のまま録画中"))
+    : sel.value === "obs" ? t("OBS の設定を変えずに録画します")
+    : p && p.ready === false ? t("OBS にプロファイル「{profile}」がありません。OBS を閉じて「HeisoRecorder --setup-obs-profiles」を実行すると作れます。このままだと今の OBS の設定で録画します", { profile: p.profile })
+    : t("録画の間だけ OBS のプロファイル「{profile}」に切り替え、終わったら元に戻します", { profile: p ? p.profile : "" }) + (p && p.note ? `(${p.note})` : "");
+}
+
+// 録画するシーン。選んだものはアプリ側(保存先フォルダ)に覚え、録画の間だけ OBS をそのシーンに切り替える。空 = OBS で今選んでいるシーンのまま
+let sceneKey = null;
+function renderScene(s, locked) {
+  const sel = $("scene"), sc = s.scene;
+  $("sceneBox").hidden = !s.obs.enabled || !sc;
+  if (!sc) return;
+  const scenes = sc.scenes || [];
+  const missing = sc.selected && !scenes.includes(sc.selected) && sc.scenes != null;
+  // 選択肢は、シーンの一覧か今のシーンが変わったときだけ作り直す(開いている一覧が閉じないように)
+  const key = JSON.stringify([scenes, sc.current, sc.selected, missing]);
+  if (key !== sceneKey && document.activeElement !== sel) {
+    sceneKey = key;
+    sel.innerHTML = "";
+    const add = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; sel.appendChild(o); };
+    add("", sc.current ? t("OBS で今選んでいるシーン(今: {scene})", { scene: sc.current }) : t("OBS で今選んでいるシーン"));
+    for (const n of scenes) add(n, n);
+    if (sc.selected && !scenes.includes(sc.selected)) add(sc.selected, sc.scenes == null ? sc.selected : t("{scene}(OBS に無い)", { scene: sc.selected }));
+    sel.value = sc.selected || "";
+  }
+  sel.disabled = locked || !s.obs.connected;
+  $("sceneHint").textContent = !s.obs.connected ? ""
+    : !sc.selected ? t("録画を始めたときに OBS で選んでいるシーンを録画します。画面キャプチャ用などに別のシーンにしたままだと、そのシーンが録画されます")
+    : missing ? t("OBS にシーン「{scene}」がありません。このままだと今のシーンで録画します", { scene: sc.selected })
+    : t("録画の間だけ OBS のシーンを「{scene}」に切り替え、終わったら元に戻します", { scene: sc.selected });
+}
+
+async function poll() {
+  clearTimeout(pollTimer);
+  try {
+    render(await api("/api/status"));
+  } catch (e) {
+    if (e.status === 401) { fatal(e.message); return; }
+    $("sigTel").className = "sig bad";
+    $("telText").textContent = t("アプリに接続できません(PCで起動しているか確認してください)");
+    $("mainBtn").disabled = true;
+  }
+  const fast = status && (status.state === "starting" || status.state === "stopping");
+  pollTimer = setTimeout(poll, fast ? 300 : 1000);
+}
+
+function fatal(msg) {
+  document.body.innerHTML = "";
+  const p = document.createElement("p");
+  p.className = "fatal";
+  p.textContent = msg;
+  document.body.appendChild(p);
+}
+
+$("mainBtn").addEventListener("click", async () => {
+  if (!status || busy) return;
+  const btn = $("mainBtn");
+
+  if (status.state === "running") {
+    // 誤タップ防止: 1回目で構え、3秒以内の2回目で停止
+    if (!btn.classList.contains("armed")) {
+      btn.classList.add("armed");
+      $("mainSub").textContent = t("もう一度タップで停止");
+      clearTimeout(armedTimer);
+      armedTimer = setTimeout(() => { btn.classList.remove("armed"); if (status) render(status); }, 3000);
+      return;
+    }
+    clearTimeout(armedTimer);
+    btn.classList.remove("armed");
+    busy = true; render({ ...status, state: "stopping" });
+    try { render(await api("/api/stop", {})); toast(t("記録を保存しました")); }
+    catch (e) { toast(e.message); }
+    finally { busy = false; poll(); }
+    return;
+  }
+
+  if (status.state === "idle") {
+    busy = true; render({ ...status, state: "starting" });
+    try {
+      const video = $("video").checked && status.obs.connected;
+      render(await api("/api/start", { video, label: $("label").value, quality: $("quality").value }));
+      toast(video ? t("録画とログを開始しました") : t("ログを開始しました"));
+    } catch (e) { toast(e.message); }
+    finally { busy = false; poll(); }
+  }
+});
+
+$("markerBtn").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/marker", {});
+    toast(t("マーカー {n} を記録", { n: r.count }));
+    if (navigator.vibrate) navigator.vibrate(40);
+  } catch (e) { toast(e.message); }
+  poll();
+});
+
+$("video").addEventListener("change", () => status && render(status));
+$("scene").addEventListener("change", async () => {
+  try { render(await api("/api/scene", { scene: $("scene").value || null })); }
+  catch (e) { toast(e.message); }
+});
+$("quality").addEventListener("change", async () => {
+  try { render(await api("/api/quality", { preset: $("quality").value })); }
+  catch (e) { toast(e.message); }
+});
+
+// PC(このPC上のブラウザ)で開いたときだけ QR を出す
+async function setupConnect() {
+  try {
+    const info = await api("/api/connect-info");
+    if (!info.isLocal) return;
+    const sel = $("ipSel");
+    if (!info.urls.length) {
+      $("url").textContent = t("ネットワークのアドレスが見つかりません。PCがWi-Fiか有線LANにつながっているか確認してください。");
+    }
+    info.urls.forEach((u, i) => {
+      const o = document.createElement("option");
+      o.value = u.url; o.textContent = `${u.address}(${u.name})`;
+      if (i === 0) o.selected = true;
+      sel.appendChild(o);
+    });
+    const draw = () => {
+      const url = sel.value;
+      if (!url) return;
+      const qr = qrcode(0, "M");
+      qr.addData(url);
+      qr.make();
+      $("qr").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
+      $("url").textContent = url;
+    };
+    sel.addEventListener("change", draw);
+    draw();
+    $("connect").hidden = false;
+    $("main").classList.add("has-connect");
+  } catch (e) { /* 合言葉エラーは poll 側で表示 */ }
+}
+
+if (!K) fatal(t("このページは合言葉付きのURLで開いてください。PCで起動したときに開いた画面のQRコードを読み取ってください。"));
+else { setupConnect(); poll(); }
+</script>
+</body>
+</html>

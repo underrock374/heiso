@@ -1,0 +1,9 @@
+<Window x:Class="Fh6.Player.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="HEISO Player" Width="1400" Height="900" Background="#16181c">
+    <Grid>
+        <wv2:WebView2 x:Name="Web" DefaultBackgroundColor="#16181c" />
+    </Grid>
+</Window>

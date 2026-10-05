@@ -1,0 +1,187 @@
+:root {
+  --bg: #16181c;
+  --panel: #1f2228;
+  --line: #2e323a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --accent: #4ea1ff;
+  --error: #ff7a7a;
+  --pointer: #ffcc33;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* display を指定した要素でも、hidden で隠れるように */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Yu Gothic UI", "Meiryo UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+body { display: flex; flex-direction: column; }
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+header .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header label, header button { white-space: nowrap; flex: none; }
+header label { display: inline-flex; align-items: center; gap: 6px; }
+header #race { max-width: 420px; }
+header .spacer { flex: 1; }
+
+button, select {
+  background: #2a2e36;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent); border-color: var(--accent); color: #0b1320; }
+
+/* 上の欄の操作(開く・書き出す・設定)。ほかのボタンより目立たせる。書き出すは緑(青の塗りは「選んでいる」の印なので使わない) */
+button.cmd { background: #1f3b5c; border-color: var(--accent); color: #fff; font-weight: 600; }
+button.cmd:hover:not(:disabled) { background: #28507d; }
+button.cmd.primary { background: #2c8a53; border-color: #4cc27f; }
+button.cmd.primary:hover:not(:disabled) { background: #36a565; }
+
+main { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+
+.message { padding: 48px; color: var(--muted); }
+.message.error { color: var(--error); }
+
+#player { padding: 8px 12px; }
+
+.top { display: flex; gap: 12px; }
+.videoBox { flex: 1; min-width: 0; }
+video { width: 100%; max-height: 52vh; background: #000; display: block; }
+.videoError { color: var(--error); }
+
+.top { align-items: flex-start; }
+/* 右の欄は動画と同じくらいの高さまで(グラフを押し下げない)。はみ出したらスクロール */
+.side { width: 300px; flex: none; display: flex; flex-direction: column; gap: 10px; max-height: calc(52vh + 8px); overflow-y: auto; padding-right: 4px; }
+.side > * { flex-shrink: 0; }   /* 欄がはみ出しても、コース図などを縮めない(スクロールする) */
+details.box > summary { color: var(--muted); cursor: pointer; padding: 2px 0 4px; }
+.controls .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.controls .label { color: var(--muted); width: 48px; }
+
+table { border-collapse: collapse; width: 100%; }
+caption { text-align: left; color: var(--muted); padding-bottom: 4px; }
+th { text-align: left; color: var(--muted); font-weight: normal; padding: 2px 8px 2px 0; white-space: nowrap; }
+td { padding: 2px 0; font-variant-numeric: tabular-nums; }
+.sync td.warn { color: var(--error); }
+
+.bottom { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
+#charts { flex: 1; min-width: 0; }
+/* グラフの横のコース図: 右端・グラフの最上段が起点。大きさは app.js が決める(左下の角のドラッグで変えられる) */
+.mapDock { position: relative; flex: none; }
+.mapDock .map { width: 100%; }
+.mapDock .mapZoom { margin-top: 4px; }
+.mapGrip {
+  position: absolute; left: -5px; bottom: -5px; width: 14px; height: 14px; z-index: 2; cursor: nesw-resize;
+  border-left: 3px solid var(--muted); border-bottom: 3px solid var(--muted); border-radius: 0 0 0 3px;
+}
+.mapGrip:hover { border-color: var(--accent); }
+.settingsDlg input.num { width: 80px; background: #2a2e36; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font: inherit; }
+.chart { position: relative; margin-bottom: 4px; }
+.laneTitle { position: absolute; top: 0; left: 58px; z-index: 1; font-size: 12px; color: var(--muted); pointer-events: none; }
+.legend { margin-left: 12px; }
+.laneTitle i.sw { display: inline-block; width: 12px; height: 3px; margin-right: 4px; vertical-align: 3px; border-radius: 1px; }
+.legend i { display: inline-block; width: 10px; height: 10px; margin: 0 3px 0 8px; vertical-align: -1px; border-radius: 2px; }
+.legend i.rumble { background: #ffd400; height: 3px; vertical-align: 2px; }
+.legend i.puddle { background: #3aa0ff; height: 3px; vertical-align: 2px; }
+.readout td { font-size: 13px; }
+label.check { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.tip {
+  position: fixed; z-index: 10; padding: 4px 8px; border-radius: 4px; font-size: 12px;
+  background: #000c; color: var(--text); border: 1px solid var(--line); pointer-events: none;
+}
+.muted { color: var(--muted); font-size: 12px; }
+
+.graphSettings { padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.settingsDlg {
+  width: min(960px, 94vw); max-height: 88vh; overflow: auto;
+  min-height: min(560px, 80vh);   /* タブを切り替えても高さが跳ねないように */
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px;
+}
+.settingsDlg::backdrop { background: #000a; }
+.settingsDlg .dlgHead { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.settingsDlg h2 { margin: 0; font-size: 16px; }
+.settingsDlg h3 { margin: 14px 0 6px; font-size: 13px; color: var(--muted); font-weight: normal; }
+.settingsDlg .spacer { flex: 1; }
+.namesDlg { width: min(640px, 94vw); min-height: 0; }
+.namesDlg .optName { width: 40px; }
+.settingsDlg input.text { flex: 1; min-width: 0; background: #2a2e36; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font: inherit; }
+.namesDlg select { min-width: 180px; }
+.jobBar {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 50;
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; box-shadow: 0 4px 16px #0008;
+}
+.jobBar progress { width: 220px; }
+.settingsDlg .dlgFoot, .namesDlg .dlgFoot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.namesDlg p.error { color: var(--error); margin: 6px 0; }
+.settingsDlg .dlgTabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 8px 0 4px; }
+.settingsDlg .dlgTabs button { border-radius: 4px 4px 0 0; border-bottom: none; padding: 6px 16px; }
+.settingsDlg .dlgTabs button.on { background: var(--accent); border-color: var(--accent); color: #0b1320; font-weight: 600; }
+.settingsDlg section > label.check { display: flex; margin: 4px 0; }
+.settingsDlg .opt { display: flex; align-items: center; gap: 16px; margin: 4px 0; }
+.settingsDlg .optName { width: 40px; color: var(--muted); }
+.settingsDlg p.muted { margin: 4px 0; }
+.settingsHead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.laneRow { display: flex; align-items: center; gap: 8px; padding: 6px; border: 1px dashed transparent; border-radius: 4px; }
+.laneRow.drop { border-color: var(--accent); background: #4ea1ff14; }
+.laneNo { color: var(--muted); min-width: 36px; white-space: nowrap; }
+.chipsBox { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-height: 26px; align-items: center; }
+.chipItem { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 10px; border-radius: 999px; background: #2a2e36; border: 1px solid var(--line); cursor: grab; }
+.chipItem .x { border: 0; background: transparent; padding: 0 6px; color: var(--muted); }
+.laneOps { display: flex; gap: 4px; }
+.laneOps button { padding: 2px 8px; }
+button:disabled { opacity: 0.4; cursor: default; }
+.mapZoom { display: flex; gap: 4px; margin-top: -4px; }
+.mapModes { display: flex; gap: 4px; align-items: center; margin: 4px 0 6px; }
+.mapModes button, .mapModes select { padding: 2px 6px; font-size: 12px; }
+.mapModes button { flex: 1; }
+.mapModes select { flex: 1.4; }
+.map3dBox { position: relative; width: 100%; height: 220px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.map3dBox canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#map3dOverlay { cursor: grab; }
+.mapLegend { font-size: 11px; color: var(--muted); margin: -2px 0 6px; line-height: 1.6; }
+.mapLegend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 3px 0 8px; vertical-align: -1px; }
+.mapZoom button { flex: 1; padding: 2px 0; font-size: 12px; }
+.map { width: 100%; height: 220px; display: block; border: 1px solid var(--line); border-radius: 4px; cursor: crosshair; }
+.manual { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.manual:empty { display: none; }
+.manual .caption { color: var(--muted); margin-bottom: 4px; }
+.manual p { margin: 4px 0; }
+.manual .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.manual .spacer { flex: 1; }
+.manual input { flex: 1; min-width: 0; background: #2a2e36; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font: inherit; }
+#charts.picking .u-over { cursor: crosshair !important; }
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 20;
+  padding: 8px 16px; border-radius: 999px; background: var(--text); color: var(--bg); font-weight: 600;
+}
+.toast.error { background: var(--error); }
+.crashNotice { display: flex; align-items: center; gap: 10px; margin: 8px 12px 0; padding: 8px 12px; border: 1px solid var(--error); border-radius: 6px; background: #3a1f22; }
+.crashNotice span { flex: 1; overflow-wrap: anywhere; }
+.crashNotice[hidden] { display: none; }   /* display: flex を指定しているので、hidden を効かせる */
+.pointer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--pointer);
+  pointer-events: none;
+}

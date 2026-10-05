@@ -1,0 +1,41 @@
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+*.user
+*.suo
+# Visual Studio が作る起動設定(各自の環境のもの)
+**/Properties/launchSettings.json
+TestResults/
+artifacts/
+# 配布用の zip(tools/build-dist.ps1 が作る)
+dist/
+
+# 個人設定・秘密情報(OBS のパスワードなど)
+appsettings.Local.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# 記録データは NAS に置く。testdata/ の小さなサンプルだけ Git に入れる
+*.csv.gz
+*.raw.gz
+*.mp4
+*.mkv
+*.mov
+*.xlsx
+log_dir/
+!testdata/**
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code の個人用設定
+.claude/settings.local.json

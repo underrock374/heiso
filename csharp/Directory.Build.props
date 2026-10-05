@@ -1,0 +1,10 @@
+<Project>
+
+  <!-- リポジトリ全体で共通の設定。バージョンはここで1つだけ持つ -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

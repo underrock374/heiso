@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Fh6.Recorder</RootNamespace>
+    <AssemblyName>HeisoRecorder</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Fh6.Core\Fh6.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- exe を直接起動しても画面が出るよう、wwwroot を出力フォルダへコピーする -->
+    <Content Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 画面の言語の訳を引く i18n.js は Fh6.Core にだけ置き、ここから画面のフォルダへ出す(訳そのものは /i18n-data.js で渡す) -->
+    <Content Include="..\Fh6.Core\i18n\i18n.js" Link="wwwroot\i18n.js" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- appsettings.Local.json(Git 管理外の個人設定)があれば出力フォルダへコピーする -->
+    <None Remove="appsettings.Local.json" />
+    <Content Remove="appsettings.Local.json" />
+    <Content Include="appsettings.Local.json" Condition="Exists('appsettings.Local.json')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+</Project>

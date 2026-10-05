@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Fh6.Player</RootNamespace>
+    <AssemblyName>HeisoPlayer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF の中に Edge(Chromium)の画面を埋め込む。動画の再生とグラフは HTML/JavaScript で作る -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Fh6.Core\Fh6.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 画面の HTML/JS/CSS と、同梱した uPlot を出力フォルダへコピーする -->
+    <None Include="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 画面の言語の関数(Core に 1 つだけ置いているもの)を、画面のフォルダへ出す -->
+    <None Include="..\Fh6.Core\i18n\i18n.js" Link="wwwroot\i18n.js" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

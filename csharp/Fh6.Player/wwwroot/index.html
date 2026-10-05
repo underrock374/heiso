@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title data-i18n>HEISO 単走版</title>
+<link rel="stylesheet" href="lib/uplot/uPlot.min.css">
+<link rel="stylesheet" href="app.css">
+<!-- 画面の言語(辞書は C# がページの読み込みより前に渡す。Fh6.Core の i18n) -->
+<script src="i18n.js"></script>
+</head>
+<body>
+<header>
+  <button id="open" class="cmd" data-i18n>セッションフォルダを開く</button>
+  <button id="openPackage" class="cmd" title="配布パッケージ(.heiso.zip)を開く" data-i18n data-i18n-title>パッケージを開く</button>
+  <span id="name" class="name"></span>
+  <label title="記録の中のレースを選ぶと、そのスタートの3秒前へ移り、グラフをそのレースの範囲にする" data-i18n-title><span data-i18n>レース</span>
+    <select id="race" disabled><option value="" data-i18n>全体</option></select>
+  </label>
+  <button id="raceNamesBtn" disabled title="選んでいるレースのコース名・車名・セッティング名を付ける(記録の保存先の登録ファイルにも登録する)" data-i18n data-i18n-title>名前を付ける</button>
+  <label title="距離は 1 つのレースについて。レースが「全体」なら 1 レース目を選ぶ。リワインドでやり直した走りは出さず、最後まで残った走りを距離で並べる" data-i18n-title><span data-i18n>横軸</span>
+    <select id="axis" disabled><option value="time" data-i18n>時間</option><option value="dist" data-i18n>距離</option></select>
+  </label>
+  <button id="skipNow" class="toggle" title="押すたびに ON / OFF。ON なら再生中、やり直し区間(リワインド・チェックポイント逃し)とフォトモード・メニューの一時停止(グラフの灰色の帯)に入ったら飛ばす。この記録を開いている間だけ(開いたときは設定の値)" data-i18n data-i18n-title>スキップ OFF</button>
+  <span class="spacer"></span>
+  <button id="exportBtn" class="cmd primary" disabled title="選んでいるレースを、配布パッケージ(.heiso.zip。動画・テレメトリー・情報を 1 つにまとめたもの)に書き出す。動画はレースの 5 秒前から 5 秒後まで" data-i18n data-i18n-title>書き出す</button>
+  <button id="settingsBtn" class="cmd" title="印・再生・グラフの段・同期の方式。どの記録にも共通" data-i18n data-i18n-title>設定</button>
+</header>
+
+<dialog id="exportDlg" class="settingsDlg namesDlg">
+  <div class="dlgHead">
+    <h2 data-i18n>書き出す</h2>
+    <span class="muted" id="exRace"></span>
+  </div>
+  <section>
+    <label class="check"><input type="radio" name="exMode" value="copy"> <span data-i18n>元の画質のまま(作り直さない。数秒で終わる)</span></label>
+    <p class="muted" data-i18n>録画をそのまま切り出します。画質は録ったときのまま。頭はレース開始の 5 秒前より前のキーフレームから(HEISO の OBS のプロファイルなら最大 1 秒前)。</p>
+    <label class="check"><input type="radio" name="exMode" value="720"> <span data-i18n>720p に縮める(ffmpeg で作り直す。数十秒〜数分)</span></label>
+    <p class="muted" data-i18n>ファイルが小さくなり、人に渡しやすくなります。頭はレース開始のちょうど 5 秒前。GPU が使えれば速く終わります。</p>
+    <p class="muted" id="exFfmpeg" data-i18n>ffmpeg を確かめています…</p>
+  </section>
+  <div class="dlgFoot">
+    <button id="exCancel" data-i18n>キャンセル</button>
+    <button id="exGo" class="cmd primary" data-i18n>保存先を選んで書き出す</button>
+  </div>
+</dialog>
+
+<div id="jobBar" class="jobBar" hidden>
+  <span id="jobText"></span>
+  <progress id="jobProg" max="1" value="0"></progress>
+  <span id="jobPct"></span>
+  <button id="jobCancel" data-i18n>中止</button>
+</div>
+
+<dialog id="raceNamesDlg" class="settingsDlg namesDlg">
+  <div class="dlgHead">
+    <h2 data-i18n>レースの名前</h2>
+    <span class="muted" id="rnRace"></span>
+  </div>
+  <section>
+    <h3 data-i18n>コース</h3>
+    <div class="opt">
+      <span class="optName" data-i18n>選ぶ</span>
+      <select id="rnCourse"></select>
+    </div>
+    <div class="opt">
+      <span class="optName" data-i18n>名前</span>
+      <input id="rnCourseName" class="text" maxlength="60" autocomplete="off" placeholder="レース名(例: 鳥野山サーキット)" data-i18n-placeholder>
+      <select id="rnKind">
+        <option value="road" data-i18n>ロード</option><option value="dirt" data-i18n>ダート</option><option value="xc" data-i18n>クロスカントリー</option>
+        <option value="street" data-i18n>ストリート</option><option value="drag" data-i18n>ドラッグ</option><option value="other" data-i18n>その他</option>
+      </select>
+    </div>
+    <p class="muted" id="rnCourseNote"></p>
+  </section>
+  <section id="rnCarBox">
+    <h3><span data-i18n>車</span> <span class="muted" id="rnSig"></span></h3>
+    <div class="opt">
+      <span class="optName" data-i18n>車名</span>
+      <input id="rnCarName" class="text" maxlength="60" autocomplete="off" placeholder="車名(例: 1980 Abarth Fiat 131)" data-i18n-placeholder>
+    </div>
+    <div class="opt">
+      <span class="optName" data-i18n>セッティング</span>
+      <select id="rnSetup"></select>
+      <input id="rnSetupName" class="text" maxlength="60" autocomplete="off" placeholder="セッティング名(例: B600 AWD)" data-i18n-placeholder>
+    </div>
+  </section>
+  <p class="muted" data-i18n>この記録にすぐ保存します。登録ファイル(記録の保存先の fh6_registry.json)には、記録アプリが次に起動したとき(起動中なら数秒で)登録します。登録済みのコース・セッティングの名前を書き換えると、登録している名前そのものが変わります。</p>
+  <p class="error" id="rnError" hidden></p>
+  <div class="dlgFoot">
+    <button id="rnCancel" data-i18n>キャンセル</button>
+    <button id="rnSave" class="cmd primary" data-i18n>保存</button>
+  </div>
+</dialog>
+
+<dialog id="settingsDlg" class="settingsDlg">
+  <div class="dlgHead">
+    <h2 data-i18n>設定</h2>
+    <span class="muted" data-i18n>この PC の再生アプリ全体の設定です。どの記録を開いても同じ設定で表示します(変えるとすぐ反映)。</span>
+    <span class="spacer"></span>
+    <button id="settingsClose" data-i18n>閉じる</button>
+  </div>
+  <nav class="dlgTabs" id="settingsTabs">
+    <button data-tab="graph" data-i18n>グラフ</button>
+    <button data-tab="screen" data-i18n>画面</button>
+    <button data-tab="play" data-i18n>再生</button>
+    <button data-tab="export" data-i18n>書き出し</button>
+    <button data-tab="sync" data-i18n>同期</button>
+  </nav>
+  <section data-tab="screen">
+    <h3 data-i18n>言語</h3>
+    <div class="opt">
+      <label class="check"><input type="radio" name="sLang" value="auto"> <span data-i18n>自動(Windows の表示言語)</span></label>
+      <label class="check"><input type="radio" name="sLang" value="ja"> 日本語</label>
+      <label class="check"><input type="radio" name="sLang" value="en"> English</label>
+    </div>
+    <p class="muted" data-i18n>画面の言語を変えると、画面を読み直します(記録と再生の位置はそのまま)</p>
+  </section>
+  <section data-tab="screen">
+    <h3 data-i18n>単位</h3>
+    <div class="opt">
+      <span class="optName" data-i18n>速度</span>
+      <label class="check"><input type="radio" name="sUnitSpeed" value="auto"> <span data-i18n>自動</span></label>
+      <label class="check"><input type="radio" name="sUnitSpeed" value="kmh"> km/h</label>
+      <label class="check"><input type="radio" name="sUnitSpeed" value="mph"> mph</label>
+    </div>
+    <div class="opt">
+      <span class="optName" data-i18n>距離</span>
+      <label class="check"><input type="radio" name="sUnitDist" value="auto"> <span data-i18n>自動</span></label>
+      <label class="check"><input type="radio" name="sUnitDist" value="m"> m ・ km</label>
+      <label class="check"><input type="radio" name="sUnitDist" value="ft"> ft ・ mi</label>
+    </div>
+    <div class="opt">
+      <span class="optName" data-i18n>標高</span>
+      <label class="check"><input type="radio" name="sUnitElev" value="auto"> <span data-i18n>自動</span></label>
+      <label class="check"><input type="radio" name="sUnitElev" value="m"> m</label>
+      <label class="check"><input type="radio" name="sUnitElev" value="ft"> ft</label>
+    </div>
+    <p class="muted" data-i18n>自動は、Windows の地域が米国か英国ならマイル(mph・ft・mi)、それ以外はメートル(km/h・m・km)。変わるのは表示だけで、記録のデータはそのまま。距離は横軸・コース図の縮尺と範囲・曲がりの半径に、標高はジャンプの落差にも使う。</p>
+  </section>
+  <section data-tab="screen">
+    <h3 data-i18n>記録を開いたときの表示</h3>
+    <div class="opt">
+      <span class="optName" data-i18n>範囲</span>
+      <label class="check"><input type="radio" name="sView" value="all"> <span data-i18n>全体</span></label>
+      <label class="check"><input type="radio" name="sView" value="race"> <span data-i18n>レース別(1 レース目を選ぶ)</span></label>
+    </div>
+    <div class="opt">
+      <span class="optName" data-i18n>横軸</span>
+      <label class="check"><input type="radio" name="sAxis" value="time"> <span data-i18n>時間</span></label>
+      <label class="check"><input type="radio" name="sAxis" value="dist"> <span data-i18n>距離(1 つのレースについて並べるので、範囲が全体でも 1 レース目を選ぶ)</span></label>
+    </div>
+    <p class="muted" data-i18n>レースが無い記録は、全体・時間で開きます。開いた後は上の欄の「レース」「横軸」で切り替えられます(ここの設定は変わりません)。レースを選んでいるときは、再生やシークで次のレースに入ると、選択とグラフがそのレースに切り替わります。</p>
+  </section>
+  <section data-tab="screen">
+    <h3 data-i18n>コース図</h3>
+    <div class="opt">
+      <span class="optName" data-i18n>位置</span>
+      <label class="check"><input type="radio" name="sMapPos" value="side"> <span data-i18n>右の欄(動画の横)</span></label>
+      <label class="check"><input type="radio" name="sMapPos" value="graph"> <span data-i18n>グラフの横(右下)</span></label>
+    </div>
+    <div class="opt">
+      <span class="optName" data-i18n>大きさ</span>
+      <label><span data-i18n>幅</span> <input type="number" id="sMapW" min="0" max="2000" step="10" class="num"> px</label>
+      <label><span data-i18n>高さ</span> <input type="number" id="sMapH" min="0" max="2000" step="10" class="num"> px</label>
+      <button id="sMapAuto" data-i18n>グラフに合わせる</button>
+    </div>
+    <p class="muted" data-i18n>大きさはグラフの横のときだけ使う。0 ならグラフの高さに合わせた正方形。グラフの横のとき、コース図の左下の角をドラッグしても変えられる(起点は画面の右端とグラフの最上段)。</p>
+  </section>
+  <section data-tab="screen">
+    <h3 data-i18n>ウィンドウ</h3>
+    <label class="check"><input type="checkbox" id="sRememberWindow"> <span data-i18n>ウィンドウの大きさと位置(最大化も)を覚えて、次に起動したときに戻す</span></label>
+  </section>
+  <section data-tab="play">
+    <h3 data-i18n>再生</h3>
+    <label class="check"><input type="checkbox" id="sAutoStart"> <span data-i18n>記録を開いたら、最初のレースのスタートの 3 秒前から再生する</span></label>
+    <label class="check"><input type="checkbox" id="sSkipRedo"> <span data-i18n>やり直し区間(リワインド・チェックポイント逃し)とフォトモード・メニューの一時停止(グラフの灰色の帯)を自動で飛ばす(記録を開いたときの、上の欄の「スキップ ON / OFF」の状態)</span></label>
+  </section>
+  <section data-tab="graph">
+    <h3 data-i18n>グラフの段</h3>
+    <div id="graphSettings" class="graphSettings"></div>
+  </section>
+  <section data-tab="graph">
+    <h3 data-i18n>印</h3>
+    <label class="check"><input type="checkbox" id="sContacts"> <span data-i18n>接触の候補の印を出す</span></label>
+    <label class="check"><input type="checkbox" id="sLaunches"> <span data-i18n>レース以外の発進(信号待ちなど)も印にし、「◀ 前 / 次 ▶」で止まる</span></label>
+  </section>
+  <section data-tab="export">
+    <h3 data-i18n>720p で書き出す(ffmpeg)</h3>
+    <div class="opt">
+      <span class="optName" data-i18n>場所</span>
+      <input id="sFfmpeg" class="text" placeholder="空なら自動で探す(PATH、HEISO のフォルダの中の ffmpeg フォルダ)" autocomplete="off" data-i18n-placeholder>
+      <button id="sFfmpegBrowse" data-i18n>参照</button>
+      <button id="sFfmpegCheck" data-i18n>確かめる</button>
+    </div>
+    <p class="muted" id="sFfmpegStatus"></p>
+    <div class="opt">
+      <span class="optName" data-i18n>変換</span>
+      <select id="sEncoder"></select>
+    </div>
+    <p class="muted" data-i18n>ffmpeg は HEISO に入っていません。入れ方は docs/install.md の「720p で書き出すなら(ffmpeg)」。GPU のエンコーダ(NVIDIA・AMD・Intel)が使えれば速く、使えなければ CPU で作ります(遅い)。「自動」なら、この PC で使えるものを NVIDIA → AMD → Intel → CPU の順に選びます。</p>
+  </section>
+  <section data-tab="sync">
+    <h3 data-i18n>同期の方式(確認用)</h3>
+    <select id="method">
+      <option value="StartedEvent" data-i18n>録画開始イベント(通常はこれ)</option>
+      <option value="SyncSamples" data-i18n>録画中の対応表(比較用、約1秒ずれる)</option>
+    </select>
+  </section>
+</dialog>
+
+<main>
+  <div id="crashNotice" class="crashNotice" hidden>
+    <span id="crashText"></span>
+    <button id="openLogs" data-i18n>ログのフォルダを開く</button>
+    <button id="crashClose" data-i18n>閉じる</button>
+  </div>
+  <section id="empty" class="message">
+    <p data-i18n>記録アプリが作ったセッションフォルダ(yyyyMMdd_HHmmss。後ろにコメントが付いていてもよい)を開いてください。</p>
+  </section>
+  <section id="loading" class="message" hidden><p data-i18n>読み込んでいます…</p></section>
+  <section id="error" class="message error" hidden><p id="errorText"></p></section>
+
+  <section id="player" hidden>
+    <div class="top">
+      <div class="videoBox">
+        <video id="video" controls preload="auto"></video>
+        <p id="videoError" class="videoError" hidden></p>
+      </div>
+      <aside class="side">
+        <div class="controls">
+          <div class="row">
+            <button id="play" title="Space" data-i18n>再生 / 一時停止</button>
+          </div>
+          <div class="row" id="rates">
+            <span class="label" data-i18n>速さ</span>
+            <button data-rate="0.25" data-i18n>0.25倍</button>
+            <button data-rate="0.5" data-i18n>0.5倍</button>
+            <button data-rate="1" class="on" data-i18n>1倍</button>
+          </div>
+          <div class="row">
+            <span class="label" data-i18n>コマ</span>
+            <button id="prevFrame" title="1コマ戻る(,)" data-i18n data-i18n-title>◀ 1コマ</button>
+            <button id="nextFrame" title="1コマ進む(.)" data-i18n data-i18n-title>1コマ ▶</button>
+            <span id="fpsText" class="muted"></span>
+          </div>
+          <div class="row">
+            <span class="label" data-i18n>スタート</span>
+            <button id="prevStart" title="前のスタートの3秒前へ" data-i18n data-i18n-title>◀ 前</button>
+            <button id="nextStart" title="次のスタートの3秒前へ" data-i18n data-i18n-title>次 ▶</button>
+          </div>
+          <div class="row" id="spans">
+            <span class="label" data-i18n>表示幅</span>
+            <button data-span="20" class="on" data-i18n>20秒</button>
+            <button data-span="60" data-i18n>60秒</button>
+            <button data-span="0" data-i18n>全体</button>
+          </div>
+        </div>
+        <div id="mapBox" class="mapBox">
+          <canvas id="map" class="map" title="コース図(北が上)。クリックでその場所を通った時刻へ" data-i18n-title></canvas>
+          <div id="map3dBox" class="map3dBox" hidden>
+            <canvas id="map3d"></canvas>
+            <canvas id="map3dOverlay" title="左ドラッグで回転、右ドラッグで移動、ホイールで拡大・縮小、ダブルクリックで元の視点。クリックでその場所を通った時刻へ" data-i18n-title></canvas>
+          </div>
+          <div class="row mapModes">
+            <button data-mapmode="2d" title="真上から見た図(北が上)" data-i18n-title>2D</button>
+            <button data-mapmode="3d" title="標高を高さにした立体の図" data-i18n-title>3D</button>
+            <button id="mapSurface" title="4 輪の路面が同じ所はその路面の色、違う所は紫で塗る" data-i18n data-i18n-title>路面の色</button>
+            <button id="mapStep" title="拡大中、今の位置にいつも合わせるのではなく、直線の真ん中で区切った区間ごとに視点を決め、区間が変わったら移る(コーナーの途中やスピンで視点が動かない)" data-i18n data-i18n-title>区切り</button>
+          </div>
+          <div class="row mapModes" id="map3dCtl" hidden>
+            <button data-view="top" title="真上から(北が上)" data-i18n data-i18n-title>真上</button>
+            <button data-view="tilt" title="斜め上から" data-i18n data-i18n-title>斜め</button>
+            <button data-view="chase" title="車の後ろ上方から(進む向きに合わせて回る)" data-i18n data-i18n-title>後ろから</button>
+            <select id="mapExag" title="高さの強調(標高差はコースの広さに比べて小さいので、強調しないと平らに見える)" data-i18n-title>
+              <option value="auto" data-i18n>高さ 自動</option><option value="1" data-i18n>高さ ×1</option><option value="3" data-i18n>高さ ×3</option><option value="5" data-i18n>高さ ×5</option>
+            </select>
+          </div>
+          <div id="mapLegend" class="mapLegend" hidden></div>
+          <div class="row mapZoom" id="mapZoom" title="コース図の範囲。全体以外は今の位置を真ん中にして追従する(一辺の長さ)" data-i18n-title>
+            <button data-zoom="0" data-i18n>全体</button>
+          </div>
+        </div>
+        <table class="readout">
+          <tr><th data-i18n>動画の位置</th><td id="rTime">-</td></tr>
+          <tr><th data-i18n>速度</th><td id="rSpeed">-</td></tr>
+          <tr><th data-i18n>ギア</th><td id="rGear">-</td></tr>
+          <tr><th data-i18n>アクセル / ブレーキ</th><td id="rPedal">-</td></tr>
+          <tr><th data-i18n>操舵</th><td id="rSteer">-</td></tr>
+          <tr><th data-i18n>旋回</th><td id="rTurn">-</td></tr>
+          <tr><th data-i18n>スリップ 前 / 後</th><td id="rSlip">-</td></tr>
+          <tr><th data-i18n>路面</th><td id="rSurface">-</td></tr>
+          <tr><th data-i18n>勾配 / 標高</th><td id="rGrade">-</td></tr>
+        </table>
+        <details class="box" open><summary data-i18n>見つけたもの</summary>
+        <table class="sync">
+          <tr><th data-i18n>スタート</th><td id="mStarts">-</td></tr>
+          <tr><th data-i18n>周</th><td id="mLaps">-</td></tr>
+          <tr><th title="リワインド・チェックポイント逃しでやり直した走りと、フォトモード・メニューの一時停止(グラフの灰色の帯)。スキップで飛ばす" data-i18n data-i18n-title>飛ばせる区間</th><td id="mSkips">-</td></tr>
+          <tr><th data-i18n>接触の候補</th><td id="mContacts">-</td></tr>
+          <tr><th data-i18n>ジャンプ / 着地</th><td id="mJumps">-</td></tr>
+          <tr><th title="舗装から外れた後にスリップやリワインドにつながったもの" data-i18n data-i18n-title>路面 → スリップ</th><td id="mExcursions">-</td></tr>
+        </table>
+        </details>
+        <details class="box" id="manualBox"><summary data-i18n>同期の手動補正</summary>
+        <section class="manual" id="manual">
+          <p class="muted" data-i18n>映像で分かる瞬間(着地の衝撃、スタートの瞬間など)のコマと、グラフの同じ瞬間を指して保存します。</p>
+          <div class="row"><button id="msFrame" title="今表示しているコマの時刻を使う" data-i18n data-i18n-title>このコマを使う</button><span id="msFrameText">-</span></div>
+          <div class="row"><button id="msPick" title="押してからグラフをクリック。印の近くならその瞬間に合わせる" data-i18n data-i18n-title>グラフで指す</button><span id="msPickText">-</span></div>
+          <p id="msDiff" class="muted"></p>
+          <div class="row"><input id="msNote" placeholder="メモ(例: ジャンプの着地)" autocomplete="off" data-i18n-placeholder></div>
+          <div class="row">
+            <button id="msSave" disabled data-i18n>保存</button>
+            <button id="msCancel" data-i18n>やめる</button>
+            <span class="spacer"></span>
+            <button id="msClear" title="この記録の手動補正を全部消す" data-i18n data-i18n-title>補正を消す</button>
+          </div>
+        </section>
+        </details>
+        <details class="box"><summary data-i18n>同期の情報(確認用)</summary>
+        <table class="sync">
+          <tr><th data-i18n>方式</th><td id="sMethod">-</td></tr>
+          <tr><th data-i18n>対応表の点</th><td id="sSamples">-</td></tr>
+          <tr><th data-i18n>終端の検算</th><td id="sEnd">-</td></tr>
+          <tr><th data-i18n>時計の比</th><td id="sRate">-</td></tr>
+          <tr><th data-i18n>手動補正</th><td id="sManual">-</td></tr>
+        </table>
+        </details>
+      </aside>
+    </div>
+    <div class="bottom">
+      <div id="charts"></div>
+      <!-- 設定で「コース図の位置: グラフの横」にしたとき、ここへコース図を移す(右端・グラフの最上段が起点) -->
+      <div id="mapDock" class="mapDock" hidden>
+        <div id="mapGrip" class="mapGrip" title="ドラッグで大きさを変える(左下の角)" data-i18n-title></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="lib/uplot/uPlot.iife.min.js"></script>
+<div id="tip" class="tip" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script src="units.js"></script>
+<script src="graphs.js"></script>
+<script src="coursemap.js"></script>
+<script src="courseview3d.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
