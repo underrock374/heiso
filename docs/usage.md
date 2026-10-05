@@ -222,3 +222,7 @@ ffmpeg の入れ方は [install.md](install.md) の「8.」にあります。元
 - ゲームからのテレメトリーは 1 秒に約 30〜60 回(ゲームの fps による)です
 - 完走したか中断したかは、テレメトリーからの推定です
 - 同じコースの 2 本の走りを並べて見比べる「並走」は、次の版から作ります
+
+---
+
+Forza Horizon 6 © Microsoft Corporation. HEISO was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Forza Horizon 6, and it is not endorsed by or affiliated with Microsoft.

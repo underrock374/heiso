@@ -50,7 +50,7 @@
 - 入れ方: [docs/install.md](docs/install.md)
 - 使い方: [docs/usage.md](docs/usage.md)
 
-ビルド済みの一式は、GitHub の Releases からダウンロードできます。ふつうは .NET のランタイム入りの `HEISO-<版>-win-x64.zip`(約 110MB、展開するだけで動く)を、.NET 10 を入れている人は軽い `HEISO-<版>-win-x64-light.zip`(約 2MB)を選んでください。
+ビルド済みの一式は、GitHub の Releases からダウンロードできます。ふつうは .NET のランタイム入りの `HEISO-<版>-win-x64.zip`(約 125MB、展開するだけで動く)を、.NET 10 を入れている人は軽い `HEISO-<版>-win-x64-light.zip`(約 17MB)を選んでください。
 
 ## ソースからビルドする
 
@@ -68,3 +68,11 @@ dotnet test csharp/HEISO.slnx
 [MIT](LICENSE)。同梱している部品のライセンスは [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にあります。
 
 Forza Horizon は Microsoft Corporation の商標です。HEISO は Microsoft および Playground Games とは関係のない、非公式のツールです。
+
+## ゲームの映像・画像について / Game content
+
+この README と文書の画像、記録アプリで録画した動画、配布パッケージには、Forza Horizon 6 の映像が入ります。
+Microsoft の「[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)」(ゲームコンテンツの使用ルール)に従い、非営利で使ってください。
+ゲームの BGM(市販の曲)など、Microsoft 以外が権利を持つものは、このルールの対象外です。
+
+Forza Horizon 6 © Microsoft Corporation. HEISO was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Forza Horizon 6, and it is not endorsed by or affiliated with Microsoft.

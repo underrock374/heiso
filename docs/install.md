@@ -314,3 +314,7 @@ C:\HEISO\
 - 再生アプリの設定とログ: `%LOCALAPPDATA%\HEISO`
 - 記録したデータ: 「ビデオ\FH6Recorder」(または `OutputDir` に書いたフォルダ)。いらなければ消します
 - OBS のプロファイル「HEISO ○○」: OBS の「プロファイル」→「削除」で 1 つずつ
+
+---
+
+Forza Horizon 6 © Microsoft Corporation. HEISO was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Forza Horizon 6, and it is not endorsed by or affiliated with Microsoft.

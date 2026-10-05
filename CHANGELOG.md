@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-05
+
+文書だけの修正版。アプリの動きは 0.1.0 と同じ。
+
+### 文書
+- README・[docs/install.md](docs/install.md)・[docs/usage.md](docs/usage.md) に、Microsoft の「[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)」の注意書きとリンクを追加(文書の画像・動画と配布パッケージに、Forza Horizon 6 の映像が入るため)
+- README の zip の大きさを今の値に直した(ランタイム入り 約 125MB、ランタイムなし 約 17MB)
+
 ## [0.1.0] - 2026-10-05
 
 最初の公開版「HEISO 単走版」(英語名 HEISO Solo)。Forza Horizon 6(PC 版)のテレメトリーと OBS Studio の録画を同時に記録し、1 本の走りを動画とグラフを並べて振り返る Windows アプリ。
