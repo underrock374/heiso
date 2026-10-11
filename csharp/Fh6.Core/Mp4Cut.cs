@@ -15,8 +15,12 @@ public static class Mp4Cut
     /// <summary>切り出しの結果。StartSec は、元の動画のどの時刻が新しい動画の 0 秒になったか(映像のキーフレームの時刻)</summary>
     public sealed record Result(double StartSec, double EndSec, int VideoSamples, int AudioSamples);
 
-    /// <summary>元の動画の fromSec〜toSec を含むように切り出して dest に書く</summary>
-    public static Result Cut(string source, string dest, double fromSec, double toSec)
+    /// <summary>
+    /// 元の動画の fromSec〜toSec を含むように切り出して dest に書く。
+    /// startAtOrAfter なら、頭を fromSec 以降の最初のキーフレームにする(fromSec より前の画面を入れない。リプレイの前の画面など)。
+    /// noAudio なら音声のトラックを書かない
+    /// </summary>
+    public static Result Cut(string source, string dest, double fromSec, double toSec, bool startAtOrAfter = false, bool noAudio = false)
     {
         using var src = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         byte[]? ftyp = null, moov = null;
@@ -32,14 +36,22 @@ public static class Mp4Cut
         foreach (var (type, start, size) in Boxes(moov))
             if (type == "trak") tracks.Add(Track.Parse(moov.AsSpan((int)start, (int)size).ToArray()));
         var video = tracks.FirstOrDefault(t => t.Handler == "vide") ?? throw new InvalidDataException(Strings.T("映像のトラックがありません"));
-        var audio = tracks.FirstOrDefault(t => t.Handler == "soun");
+        var audio = noAudio ? null : tracks.FirstOrDefault(t => t.Handler == "soun");
 
         // ---- 映像: 始まりの直前のキーフレームから、終わりまで ----
         long want0 = (long)Math.Floor(fromSec * video.Timescale) + video.EditMediaTime;
         long want1 = (long)Math.Ceiling(toSec * video.Timescale) + video.EditMediaTime;
         int v0 = 0;
-        for (int s = 0; s < video.Count; s++)
-            if (video.IsSync(s) && video.Pts(s) <= want0) v0 = s;
+        if (startAtOrAfter)
+        {
+            v0 = -1;
+            for (int s = 0; s < video.Count && v0 < 0; s++)
+                if (video.IsSync(s) && video.Pts(s) >= want0) v0 = s;
+            if (v0 < 0) throw new InvalidDataException(Strings.T("切り出す範囲に映像がありません"));
+        }
+        else
+            for (int s = 0; s < video.Count; s++)
+                if (video.IsSync(s) && video.Pts(s) <= want0) v0 = s;
         int v1 = video.Count - 1;
         for (int s = v0; s < video.Count; s++)
             if (video.Dts[s] > want1) { v1 = s - 1; break; }

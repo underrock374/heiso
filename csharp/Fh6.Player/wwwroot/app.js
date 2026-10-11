@@ -108,6 +108,9 @@ host.addEventListener("message", (e) => {
   }
   else if (m.type === "restore") onRestore(m);
   else if (m.type === "crashNotice") onCrashNotice(m);
+  else if (m.type === "replayFound") onReplayFound(m);
+  else if (m.type === "videoMissing") onVideoMissing(m);
+  else if (m.type === "videoSelected") $("videoSel").value = m.active || "";
 });
 
 $("open").onclick = () => host.postMessage({ type: "open" });
@@ -119,6 +122,13 @@ $("exportBtn").onclick = () => {
   const r = selectedRace();
   if (!r) { toast(t("書き出すレースを、上の「レース」で選んでください"), true); return; }
   $("exRace").textContent = raceLabel(r, races.indexOf(r));
+  // 割り当てた動画を表示していれば、その動画を書き出す
+  const vopt = altInfo ? [...$("videoSel").options].find((o) => o.value === altInfo.id) : null;
+  $("exVideo").hidden = !altInfo;
+  $("exVideo").textContent = altInfo
+    ? t("書き出す動画: {label}({content})", { label: vopt ? vopt.text : "", content: altInfo.content === "replay" ? t("リプレイ。最後まで残った走りだけ、スキップ区間なし") : t("ライブ走行。リワインドも含み、スキップ区間あり") })
+    : "";
+  $("exNoAudio").checked = false;
   $("exportDlg").showModal();
   host.postMessage({ type: "probeFfmpeg" });   // ffmpeg が使えるか(C# が覚えているので、2 回目からはすぐ)
 };
@@ -129,7 +139,7 @@ $("exGo").onclick = () => {
   $("exportDlg").close();
   if (!r) return;
   logEvent(`書き出す: ${races.indexOf(r) + 1} レース目(${mode === "720" ? "720p" : "元の画質"})`);
-  host.postMessage({ type: "export", race: races.indexOf(r), mode });
+  host.postMessage({ type: "export", race: races.indexOf(r), mode, noAudio: $("exNoAudio").checked });
 };
 
 // ---- ffmpeg(720p の書き出し)の状態。書き出しの画面と、設定の「書き出し」タブに出す ----
@@ -193,6 +203,13 @@ $("method").onchange = (e) => {
 /** 画面(WebView2 の描画のプロセス)が落ちて読み直した後: 元の動画の位置へ */
 function onRestore(m) {
   pendingStart = null;
+  // 動画を切り替えたとき: 切り替えの前と同じレースを選ぶ(リプレイはレースが 1 本だけ)
+  if (m.race != null && races[m.race]) {
+    $("race").value = String(m.race);
+    setRaceRange(races[m.race]);
+    updateRaceNamesBtn();
+    renderAxis(null);
+  }
   const go = () => {
     seek(m.sec);
     followTo(m.sec, true);
@@ -232,6 +249,7 @@ function onSession(m) {
   $("name").textContent = (m.label && m.label !== m.comment ? `${m.name}  ${m.label}` : m.name) + (m.package ? t("(パッケージ)") : "");
   isPackage = !!m.package;
   $("exportBtn").hidden = isPackage;   // パッケージからは書き出さない
+  fillVideos(m);
   $("method").value = m.method;
   show("player");
 
@@ -289,6 +307,17 @@ function onSession(m) {
   updatePointer(target);
   pendingStart = video.src && target > 0 ? target : null;
 }
+
+// 動画を再生できない(形式に対応していない・壊れている)
+video.addEventListener("error", () => {
+  if (!video.getAttribute("src")) return;
+  const code = video.error ? video.error.code : 0;
+  logEvent(`動画を再生できない: ${video.src}(MediaError ${code})`, "error");
+  $("videoError").hidden = false;
+  $("videoError").textContent = code === 4
+    ? t("この動画は再生できません(形式に対応していません。H.264 の MP4 にしてください)")
+    : t("この動画は再生できません(読み込めませんでした。ファイルが壊れているかもしれません)");
+});
 
 let pendingStart = null;   // 動画の準備ができたらここへ飛んで再生する(自動でスタート3秒前)
 video.addEventListener("loadedmetadata", () => {
@@ -547,6 +576,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     frameStep(e.code === "Period" ? 1 : -1);
   }
+  // [ / ]: 割り当てた動画の同期の微調整(映像を 1 コマ前・後のコマに。Shift で 0.1 秒。グラフのカーソルの瞬間はそのまま)
+  if ((e.code === "BracketLeft" || e.code === "BracketRight") && altInfo && !typingTarget(e) && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    const dir = e.code === "BracketRight" ? 1 : -1;
+    nudgeBy(e.shiftKey ? String(dir * 0.1) : `${dir}f`);
+  }
   // Ctrl+← / →: 10 秒、Ctrl+Alt+← / →: 30 秒
   if (e.ctrlKey && (e.code === "ArrowLeft" || e.code === "ArrowRight") && !typingTarget(e)) {
     e.preventDefault();
@@ -695,7 +730,8 @@ function followRace(sec) {
 // 記録アプリの「直前のレース」の直し方と同じ。保存は C# で(session.json の race_edited と、登録の受け渡し用のファイル)
 
 function updateRaceNamesBtn() {
-  $("raceNamesBtn").disabled = !selectedRace() || isPackage;
+  $("raceNamesBtn").disabled = !selectedRace() || isPackage || !!altInfo;
+  $("addVideoBtn").disabled = !canAddVideo || !!altInfo;
 }
 
 $("raceNamesBtn").onclick = () => {
@@ -1197,6 +1233,263 @@ function frameStep(dir) {
 }
 $("prevFrame").onclick = () => frameStep(-1);
 $("nextFrame").onclick = () => frameStep(1);
+
+// ---- 動画の切り替えと割り当て(録画・リプレイ・別に録った動画。session.json の video_alt) ----
+// 切り替え・割り当て・同期の保存は C# で。切り替えたら、C# が同じ瞬間の位置を "restore" で返す
+
+let altInfo = null;        // 表示している割り当てた動画(録画なら null)
+let canAddVideo = false;   // 動画を割り当てられる記録か(パッケージでなく、記録を終えたもの)
+let hasRecording = false;
+let replayRace = null;     // 自動判別を頼んだレース(記録の中の番号)
+
+const selectedRaceIndex = () => ($("race").value === "" ? null : Number($("race").value));
+
+function fillVideos(m) {
+  altInfo = m.alt || null;
+  canAddVideo = !!m.canAddVideo;
+  hasRecording = !!m.hasRecording;
+  const sel = $("videoSel");
+  const list = m.videos || [];
+  const mark = (v) => (v.status === "missing" ? t("(見つかりません)") : v.status === "changed" ? t("(変わっています)") : "");
+  sel.innerHTML = `<option value="">${escapeHtml(t("録画"))}</option>`
+    + list.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.label + mark(v))}</option>`).join("");
+  sel.value = m.activeVideo || "";
+  sel.disabled = !list.length;
+  $("addVideoBtn").hidden = !canAddVideo;
+  showAlt();
+  updateRaceNamesBtn();
+}
+
+function showAlt() {
+  const a = altInfo;
+  $("altBox").hidden = !a;
+  $("msClear").hidden = !!(a && a.content === "replay");   // リプレイは「探し直す」で戻す
+  if (!a) return;
+  const replay = a.content === "replay";
+  $("aKind").textContent = a.kind === "replay" ? t("録画の中のリプレイ") : replay ? t("別の動画(リプレイ)") : t("別の動画(ライブ走行)");
+  $("aSync").textContent = a.method === "auto_black_motion" ? t("自動(黒い画面と動き)・確度 高(相関 {corr})", { corr: (a.corr ?? 0).toFixed(2) })
+    : a.method === "auto_black" ? t("自動(黒い画面だけ)・確度 低。ゴールの瞬間で確かめてください")
+    : replay ? t("手動(先頭 {sec})", { sec: a.zero == null ? "-" : fmtTime(a.zero) })
+    : a.points ? t("手動({n} 点)", { n: a.points }) : t("まだ合わせていません(「同期の手動補正」で合わせてください)");
+  $("aSync").classList.toggle("warn", a.method === "auto_black" || (!replay && !a.points));
+  $("aReplayRow").hidden = !replay;
+  $("aRedetect").hidden = a.kind !== "replay";
+  // 先頭とゴールの両方があれば、間隔とレースタイムの差で検算
+  const span = replay && a.zero != null && a.end != null && a.duration ? a.end - a.zero : null;
+  $("aCheck").hidden = span == null;
+  if (span != null) {
+    const d = span - a.duration;
+    $("aCheck").textContent = t("先頭からゴールまで {span} 秒(レースタイムとの差 {diff} 秒)", { span: span.toFixed(2), diff: (d >= 0 ? "+" : "") + d.toFixed(2) });
+    $("aCheck").classList.toggle("warn", Math.abs(d) > 0.1);
+  }
+  $("aWarn").hidden = !a.vfr;
+  $("aWarn").textContent = a.vfr ? t("この動画はコマの間隔が一定でない(可変フレームレート)ようです。時刻がずれることがあるので、ゴール付近でも合っているか確かめてください") : "";
+  if (a.id !== nudge.id) { nudge.id = a.id; nudge.total = 0; }
+  showNudge();
+}
+
+// ---- 同期の微調整の小窓 ----
+// グラフ(テレメトリーの瞬間)はそのままで、映像のコマを替える: 映像を delta 秒送り、同じだけ対応をずらす(C# の altNudge)。
+// こうすると、グラフのカーソルが指すテレメトリーの瞬間は変わらず、映像だけが前後のコマになる
+
+const nudge = { id: null, total: 0 };
+const FLOAT_KEY = "heiso.syncFloat.v1";
+let floatState = (() => { try { return JSON.parse(localStorage.getItem(FLOAT_KEY)) || {}; } catch { return {}; } })();
+const saveFloat = () => { try { localStorage.setItem(FLOAT_KEY, JSON.stringify(floatState)); } catch { /* 保存できなくても動く */ } };
+
+function showNudge() {
+  const open = !!altInfo && !floatState.closed;
+  const box = $("syncFloat");
+  const wasHidden = box.hidden;
+  box.hidden = !open;
+  if (open && wasHidden) placeFloat();
+  $("sfShift").textContent = nudge.total
+    ? (nudge.total > 0 ? t("映像を {ms} ms 後ろへずらしました", { ms: Math.round(nudge.total * 1000) }) : t("映像を {ms} ms 前へずらしました", { ms: Math.round(-nudge.total * 1000) }))
+    : "";
+}
+
+/** 小窓の位置: 覚えていればそこ、無ければ動画の左下。画面の外に出ないように */
+function placeFloat() {
+  const box = $("syncFloat");
+  const vb = $("video").getBoundingClientRect();
+  let x = floatState.x ?? vb.left + 12, y = floatState.y ?? vb.bottom - box.offsetHeight - 60;
+  x = Math.min(Math.max(0, x), innerWidth - box.offsetWidth);
+  y = Math.min(Math.max(0, y), innerHeight - box.offsetHeight);
+  box.style.left = `${x}px`;
+  box.style.top = `${y}px`;
+}
+window.addEventListener("resize", () => { if (!$("syncFloat").hidden) placeFloat(); });
+
+$("sfHead").addEventListener("pointerdown", (e) => {
+  if (e.target.tagName === "BUTTON") return;
+  const box = $("syncFloat"), r = box.getBoundingClientRect();
+  const dx = e.clientX - r.left, dy = e.clientY - r.top;
+  $("sfHead").setPointerCapture(e.pointerId);
+  const move = (ev) => { floatState.x = ev.clientX - dx; floatState.y = ev.clientY - dy; placeFloat(); };
+  const up = () => { $("sfHead").removeEventListener("pointermove", move); $("sfHead").removeEventListener("pointerup", up); saveFloat(); };
+  $("sfHead").addEventListener("pointermove", move);
+  $("sfHead").addEventListener("pointerup", up);
+});
+$("sfClose").onclick = () => { floatState.closed = true; saveFloat(); showNudge(); };
+$("aFloatOpen").onclick = () => { floatState.closed = false; saveFloat(); showNudge(); };
+
+/** 映像を v("1f" = 1 コマ、"0.1" = 0.1 秒。負なら前)だけ送り、同じだけ対応をずらす(グラフのカーソルの瞬間はそのまま) */
+function nudgeBy(v) {
+  if (!altInfo || !video.src) return;
+  const delta = v.endsWith("f") ? Number(v.slice(0, -1)) * frameSec : Number(v);
+  video.pause();
+  const target = video.currentTime + delta;
+  if (target < 0) return;
+  nudge.total += delta;
+  video.currentTime = target;
+  host.postMessage({ type: "altNudge", delta });
+  showNudge();
+}
+for (const b of document.querySelectorAll("#sfNudge button")) b.onclick = () => nudgeBy(b.dataset.nudge);
+
+/** 前・次のブレーキの踏み始め(0 → 踏む)か変速(ギアが変わる動作の始まり)へ、グラフのカーソルと映像を移す */
+function jumpEvent(kind, dir) {
+  if (!tdata) return;
+  const tt = tdata.t, list = [];
+  if (kind === "brake") {
+    const b = tdata.brake;
+    for (let i = 1; i < tt.length; i++) if (b[i] != null && b[i] > 0 && b[i - 1] === 0) list.push(tt[i]);
+  } else {
+    // 変速: ギアの値が途切れた(変速動作中 = null)所。走行中(速度あり)だけ
+    const g = tdata.gear, sp = tdata.speed;
+    for (let i = 1; i < tt.length; i++) if (g[i] == null && g[i - 1] != null && sp[i] != null && sp[i] > 5) list.push(tt[i]);
+  }
+  const now = currentSec(), eps = 0.02;
+  const target = dir > 0 ? list.find((x) => x > now + eps) : [...list].reverse().find((x) => x < now - eps);
+  if (target == null) { toast(t("この先にはありません")); return; }
+  video.pause();
+  seek(target);
+  followTo(target, true);
+  updatePointer(target);
+}
+for (const b of document.querySelectorAll("#syncFloat [data-jump]")) b.onclick = () => jumpEvent(b.dataset.jump, Number(b.dataset.dir));
+
+$("videoSel").onchange = (e) => {
+  const id = e.target.value || null;
+  logEvent(`動画を切り替える: ${id || "録画"}`);
+  host.postMessage({ type: "selectVideo", id, sec: currentSec(), race: selectedRaceIndex() });
+  e.target.blur();
+};
+
+function onVideoMissing(m) {
+  $("videoSel").value = m.active || "";
+  const q = m.changed ? t("動画が、割り当てたときと変わっています(大きさか長さが違います)。動画を選び直しますか?")
+    : t("動画が見つかりません(移動したか、消したかもしれません)。動画を選び直しますか?");
+  if (confirm(q)) host.postMessage({ type: "relinkVideo", id: m.id, sec: currentSec(), race: selectedRaceIndex() });
+}
+
+$("addVideoBtn").onclick = () => {
+  const r = selectedRace();
+  if (!r) { toast(t("動画を割り当てるレースを、上の「レース」で選んでください"), true); return; }
+  $("avRace").textContent = raceLabel(r, races.indexOf(r));
+  $("avAuto").disabled = !hasRecording;
+  $("avAutoNote").classList.toggle("warn", !hasRecording);
+  $("addVideoDlg").showModal();
+};
+$("avCancel").onclick = () => $("addVideoDlg").close();
+$("avAuto").onclick = () => {
+  $("addVideoDlg").close();
+  logEvent("リプレイを探す: 全部のレース");
+  host.postMessage({ type: "addReplayAuto", race: selectedRaceIndex() });
+};
+for (const [id, content] of [["avLive", "live"], ["avReplay", "replay"]]) {
+  $(id).onclick = () => {
+    $("addVideoDlg").close();
+    host.postMessage({ type: "addVideoFile", content, race: selectedRaceIndex(), sec: currentSec() });
+  };
+}
+
+/** 自動判別の結果(レースごと)。見つかったレースに「採用」を出す。手動で合わせるのは、選んでいるレース(無ければ結果の最後のレース) */
+function onReplayFound(m) {
+  const list = m.results || [];
+  replayRace = m.selected ?? (list.length ? list[list.length - 1].race : null);
+  $("rfRace").textContent = "";
+  const box = $("rfList");
+  box.innerHTML = "";
+  for (const r of list) {
+    const row = document.createElement("div");
+    row.className = "rfRow" + (r.found ? " found" : "");
+    const head = document.createElement("div");
+    head.className = "rfHead";
+    head.textContent = races[r.race] ? raceLabel(races[r.race], r.race) : t("{n} レース目", { n: r.race + 1 });
+    const text = document.createElement("div");
+    text.className = "rfText";
+    text.textContent = r.found
+      ? t("リプレイを見つけました: 動画の {zero} から {end} まで(レースタイム {len} 秒)。確度: {conf}", {
+        zero: fmtTime(r.zero), end: fmtTime(r.end), len: r.duration.toFixed(2),
+        conf: r.confidence === "high" ? t("高(動きの相関 {corr})", { corr: (r.corr ?? 0).toFixed(2) }) : t("低(切り替えた後、ゴールの瞬間で確かめてください)"),
+      })
+      : t("このレースの後にはリプレイがありません");
+    row.append(head, text);
+    if (r.warning) {
+      const w = document.createElement("div");
+      w.className = "error";
+      w.textContent = r.warning;
+      row.append(w);
+    }
+    if (r.found) {
+      const b = document.createElement("button");
+      b.className = "cmd primary";
+      b.textContent = t("採用");
+      b.onclick = () => {
+        $("replayFoundDlg").close();
+        host.postMessage({ type: "adoptReplay", manual: false, sec: currentSec(), race: r.race });
+      };
+      row.append(b);
+    }
+    box.append(row);
+  }
+  if (!list.some((r) => r.found)) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = t("どのレースの後にも、リプレイの終わりの黒い画面が見つかりませんでした。手動で合わせることはできます。");
+    box.append(p);
+  }
+  $("rfManual").hidden = replayRace == null;
+  $("rfManual").textContent = replayRace == null ? t("手動で合わせる") : t("{n} レース目に手動で合わせる", { n: replayRace + 1 });
+  $("replayFoundDlg").showModal();
+}
+$("rfCancel").onclick = () => $("replayFoundDlg").close();
+$("rfManual").onclick = () => {
+  $("replayFoundDlg").close();
+  if (replayRace != null) host.postMessage({ type: "adoptReplay", manual: true, sec: currentSec(), race: replayRace });
+};
+
+$("aZero").onclick = () => {
+  if (!video.src) return;
+  video.pause();
+  host.postMessage({ type: "altMark", what: "zero", sec: lastMediaTime ?? video.currentTime });
+};
+$("aEnd").onclick = () => {
+  if (!video.src) return;
+  video.pause();
+  host.postMessage({ type: "altMark", what: "end", sec: lastMediaTime ?? video.currentTime });
+};
+$("aGoFinish").onclick = () => {
+  // リプレイはレースが 1 本だけ。ライブは割り当てたレース
+  const r = races[altInfo && altInfo.content !== "replay" ? altInfo.race : 0];
+  if (!r || r.tf == null) return;
+  video.pause();
+  seek(r.tf);
+  followTo(r.tf, true);
+};
+$("aRedetect").onclick = () => {
+  if (!altInfo) return;
+  replayRace = altInfo.race;
+  host.postMessage({ type: "addReplayAuto", only: altInfo.race, race: altInfo.race });
+};
+$("aRelink").onclick = () => {
+  if (altInfo) host.postMessage({ type: "relinkVideo", id: altInfo.id, sec: currentSec(), race: selectedRaceIndex() });
+};
+$("aRemove").onclick = () => {
+  if (altInfo && confirm(t("この動画の割り当てを外しますか?(動画のファイルは消しません)")))
+    host.postMessage({ type: "removeVideo", id: altInfo.id, sec: currentSec(), race: selectedRaceIndex() });
+};
 
 // ---- 同期の手動補正 ----
 // 映像のコマの秒(このコマを使う)と、グラフで指した瞬間(今の変換での動画の秒)を C# に送り、

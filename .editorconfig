@@ -1,0 +1,23 @@
+# エディター(Visual Studio・VS Code など)の保存の決まり。今あるファイルの書き方に合わせている(2026-10-06)
+# 改行(CRLF / LF)は .gitattributes で決めるので、ここでは決めない
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+
+# Windows PowerShell 5 は BOM の無い UTF-8 を ANSI として読み、日本語のコメントで文法エラーになる(release.ps1 で起きた)
+[*.ps1]
+charset = utf-8-bom
+
+[*.{cs,xaml}]
+indent_style = space
+indent_size = 4
+
+[*.{csproj,props,slnx,js,html,css,json,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Markdown の行末の空白 2 つは改行の意味があるので消さない
+[*.md]
+trim_trailing_whitespace = false

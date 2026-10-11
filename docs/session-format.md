@@ -121,6 +121,7 @@ HEISO の記録アプリ(`csharp/Fh6.Recorder`、書き出し処理は `csharp/F
 | `video` | 録画と同期の情報(次節) |
 | `markers[]` | 手動マーカー。`recv_time`、`timestamp_ms`、`label` |
 | `events[]` | 記録中の出来事。`recv_time`、`type`、`detail`(人が読む説明。任意)、`data`(出来事ごとの値のオブジェクト。任意。下記) |
+| `video_alt[]` | 録画のほかに割り当てた動画(リプレイ・別に録った動画)と、その同期の方法。再生アプリが書く。無ければキーが無い(下記「割り当てた動画」。2026-10-10) |
 | `stats` | `packets_received` `rows_written` `idle_rows_collapsed` `effective_hz` `median_interval_ms` `interval_jumps`(100ms 超の間隔の数) `max_interval_ms` `bad_size_packets` `race_state_transitions` `duration_sec` `cars_seen`(`"car_ordinal|クラスPI|駆動方式"`) |
 
 `events[].type` の値: `logging_started` `obs_quality_applied` `obs_quality_failed` `obs_scene_applied` `obs_scene_failed` `obs_scene_restored` `obs_scene_restore_failed` `obs_record_started` `obs_record_stopped` `obs_record_stopped_externally` `obs_set_record_directory_failed` `obs_stop_failed` `obs_quality_restored` `obs_quality_restore_failed` `video_duration_unavailable` `logging_stopped`、および次の車両・レース・コースの出来事
@@ -186,7 +187,7 @@ HEISO の記録アプリ(`csharp/Fh6.Recorder`、書き出し処理は `csharp/F
 | `obs_version` / `output_path` / `error` | OBS の版、録画ファイルのパス、失敗時の理由 |
 | `sync_samples[]` | `[recv_time, 動画内の秒, 問い合わせ往復 ms]`。録画中に約 2 秒ごと(開始直後は 0.3 秒おきに 5 回)OBS の `GetRecordStatus.outputDuration` を記録したもの。**実際の動画位置より約 1.0 秒遅れて報告される**(下記の実測)ので、時刻の変換には使わない。動画の時間軸の伸び縮み(`clock_rate`)の確認用 |
 | `video_zero_recv_time` | 動画の 0 秒に当たる `recv_time`。**録画開始イベントの受信時刻**(`started_event_recv_time`)。それが無い記録だけ `sync_samples` の最初の 5 点から求める(約 1 秒遅い値になる) |
-| `video_zero_method` | `video_zero_recv_time` の求め方。`started_event` か `sync_samples`。このキーが無い記録(2026-09-28 より前)は `sync_samples` 由来で約 1 秒遅いので、`--resync` で作り直す |
+| `video_zero_method` | `video_zero_recv_time` の求め方。`started_event` か `sync_samples`。配布パッケージで割り当てた動画を書き出したときは `manual`(ライブ。同期の点から)か `replay_race_time`(リプレイ。仮想の時刻から)。このキーが無い記録(2026-09-28 より前)は `sync_samples` 由来で約 1 秒遅いので、`--resync` で作り直す |
 | `clock_rate` | `sync_samples` の傾き(動画秒 / 実時間秒)。1.0 なら伸び縮みなし |
 | `start_requested_recv_time` | 録画の開始を要求した時刻(OBS へ `StartRecord` を送る直前)。2026-09-28 より前の記録には無い |
 | `started_event_recv_time` / `stop_requested_recv_time` / `stopped_event_recv_time` | 録画開始イベントの受信、停止要求の送信、停止イベントの受信の時刻 |
@@ -246,6 +247,39 @@ OBS の設定値そのものは書き換えない(外から書き換えると OB
 シーンの切り替えは obs-websocket の `SetCurrentProgramScene`(スタジオモードでもプログラムのシーンを切り替える)。シーンの中身(ソース)は変えない。
 元のシーン名は保存先フォルダの `.recorder_obs_scene_restore.json` にも書き、アプリが途中で落ちたときは次に OBS へつながった時点で戻す。
 
+### 割り当てた動画(`video_alt[]`、2026-10-10)
+
+記録の録画(`video`)のほかに、再生アプリで割り当てた動画。記録の動画の後半に入っているゲームのリプレイ(追従カメラ)と、利用者が選んだ別の動画(Game Bar の録画など)。
+再生アプリが書く(`complete: true` の記録だけ。保存の直前に読み直し、知らないキーは消さない)。項目を足しただけなので、形式の識別子は変えない。作業指示 `docs/tasks/008-replay-external-video.md`。
+
+| キー | 内容 |
+|---|---|
+| `id` | この記録の中で一意の名前(`alt-1`、`alt-2` …) |
+| `kind` | `replay`(記録の動画の中から見つけたリプレイ)/ `external`(利用者が選んだ動画) |
+| `content` | 動画の中身。`live`(ライブ走行を録ったもの。リワインドも映っている。スキップ区間などは録画と同じに使う)/ `replay`(ゲームのリプレイ。最後まで残った時間軸だけ) |
+| `label` | 画面に出す名前(任意) |
+| `path` | 動画の絶対パス(その PC のもの。配布パッケージには入れない) |
+| `path_rel` | 動画がセッションフォルダの中にあるときだけ、フォルダからの相対パス。探す順は `path_rel` → `path` |
+| `file` | 割り当てたときの動画の確認情報。`size_bytes`、`duration_sec`、`fps`、`mtime_utc`。開くときにサイズか長さが違えば「見つかりません」と同じに扱い、選び直してもらう(同期の値は捨てない) |
+| `race_start_recv_time` | どのレースに付けたか(そのレースの開始の行の `recv_time`) |
+| `sync` | 同期(下記) |
+| `created_at` / `updated_at` | ローカル時刻 ISO 8601 |
+
+`sync`:
+
+| キー | 内容 |
+|---|---|
+| `basis` | `race_time`(リプレイ。レースタイムでつないだ最終の時間軸 `RaceTimeline` に、`replay_zero_video_sec` で合わせる)/ `recv_time`(ライブ。`points` で合わせる) |
+| `method` | `auto_black_motion`(黒と動きで自動)/ `auto_black`(黒だけで自動。動きの検算が通らなかった)/ `manual` |
+| `confidence` | 自動のときの確度。`high` / `low`。手動なら null |
+| `replay_zero_video_sec` | リプレイの先頭(レースタイム 0)の動画の秒(`basis` が `race_time` のとき) |
+| `replay_end_video_sec` | リプレイの終わり(黒の始まり = ゴール)の動画の秒。分からなければ null |
+| `clean_duration_sec` | 合わせたときの最終の時間軸の長さ(ゴールのレースタイム) |
+| `check` | 自動のときの動きの検算。`corr`(相関のピーク)、`lag_sec`(そのときの遅れ)。無ければ null |
+| `points[]` | `basis` が `recv_time` のときの同期の点。`video.manual_sync[]` と同じ形(`recv_time`、`video_sec`、`note`、`created_at`)。最後の 1 点だけを使い、動画の秒 = `recv_time` + (`video_sec` − その点の `recv_time`) |
+
+リプレイを再生するときは、最終の時間軸の行の `recv_time` を連続した仮想の時刻に振り直し(`RaceTimeline.Retime`)、動画 0 秒の仮想の時刻を「仮想の起点 − `replay_zero_video_sec`」として、`VideoTimeMap` で変換する。
+
 **知らないキーの扱い**: C# のアプリ(記録アプリ、`--resync`、再生アプリ)は、`session.json` を読んで書き戻すとき、自分の知らないキーも消さずに残す。
 新しいキーを足すときは、古いアプリで一度保存されても消えないことを前提にしてよい。
 
@@ -286,6 +320,20 @@ OBS の設定値そのものは書き換えない(外から書き換えると OB
 
 手動補正は、展開した先の `session.json` に保存する(元の Zip は変えない)。
 
+**割り当てた動画を書き出すとき**(`video_alt`、2026-10-11。作業指示 008 §4.5): 形式は `heiso-package/1` のまま(キーを足しただけ)。
+`session.json` の `video_alt` は、どの書き出しでも入れない(利用者の PC のパスを含むため)。
+
+- **ライブ**(`content` が `live` の別に録った動画): 範囲・テレメトリー・スキップ区間は録画と同じ(レース開始の 5 秒前〜ゴールの 5 秒後。リワインドの行も残し、除く区間は `skips`)。
+  時刻の対応は、`video_alt` の最後の同期の点(動画 0 秒の時刻 = 点の `recv_time` − `video_sec`)から作る。
+  `session.json` は `video_zero_recv_time` = `started_event_recv_time` = その時刻 + `cut_from_sec`、`video_zero_method` = `manual`、`sync_samples` と `manual_sync` は空。
+  同期の点が無ければ書き出さない
+- **リプレイ**(`content` が `replay`): テレメトリーは、最終の時間軸(`RaceTimeline`)の行だけを、`recv_time` を連続した仮想の時刻に振り直して書く(ほかの列は元の文字のまま。
+  仮想の時刻の起点は、最終の時間軸の先頭の行の元の `recv_time`)。レースの行は全部入れる(作り直さずに切り出すと、動画の頭がキーフレームまで最大 1 秒ほど遅れるので、その分のテレメトリーは動画の 0 秒より前になる)。
+  動画は、リプレイの先頭以降の最初のキーフレーム(作り直すときはリプレイの先頭のコマ)から、リプレイの終わり(黒の始まり = ゴールの瞬間。分からなければ先頭 + レースタイム)の 0.5 秒後まで。リプレイの前の画面と、黒の後のループを入れない(黒の手前で切るとゴールの直前で止まるため。2026-10-11)。
+  `session.json` は `video_zero_recv_time` = `started_event_recv_time` = 動画 0 秒に当たる仮想の時刻、`video_zero_method` = `replay_race_time`、`sync_samples` と `manual_sync` は空。
+  出来事はこのレースを後から直したもの(`race_edited` / `course_confirmed`)だけ、印(`markers`)は入れない(元の時刻のため)
+- **音声を入れない**を選んだときは、音声のトラックを書かない(作り直さずに切り出すときも、作り直すときも)
+
 **`package.json`**(キーは snake_case。分からない値は null):
 
 | キー | 内容 |
@@ -299,9 +347,10 @@ OBS の設定値そのものは書き換えない(外から書き換えると OB
 | `car` | `name`・`setup`(記録アプリで確定・直したもの)、`ordinal`・`class_raw`・`pi`・`drivetrain_raw`・`cylinders`(レース開始の行のテレメトリーの値) |
 | `autodrive` / `assists` | `session.autodrive` と `session.assists` の写し |
 | `view` | 視点。今は記録していないので null |
-| `capture` | `live`(ライブ録画)/ `replay`(リプレイ録画)。今は記録していないので null |
+| `capture` | `live`(ライブ走行の動画。録画と、割り当てたライブの動画)/ `replay`(リプレイ)。2026-10-11 より前のパッケージは null |
 | `race` | `start_recv_time`・`end_recv_time`(レース開始の行とゴールの行 = ゴール直後の断片を除いたレース中の最後の行)、`restart`、`finished`(完走したか。推定)、`finished_by`(何で決めたか: `lap` = ゴールで周回数が増えた / `results` = 直後のリザルト画面で時計が進んだ / `menu` = 直後の停止区間で時計が止まっていた(中断)/ `log_end` = リザルト画面のまま記録が終わった / `speed` = 終えた瞬間の速度と停止区間の長さ)、`end_reason`(`race_end` / `next_start` / `log_end`)、`race_time_sec`(完走ならゴールの行の `cur_race_time`。ゴール直後の断片の行は、リザルト画面の分だけ時計が進んでいるので使わない。それ以外は null)、`laps`(走り終えた周の数。レース中の `lap_no` の最大。完走で、ゴールで周回数が増えなかったときは最後の周の分を 1 足す) |
-| `video` | `file`(`video.mp4`)、`duration_sec`、`fps`、`cut_from_sec`(元の録画の何秒から切り出したか)、`sync_method`(`started_event` / 手動補正があれば `manual`)、`manual_shift_sec`(手動補正のずらし量。無ければ 0)、`reencoded`(ffmpeg で作り直したときだけ。元の画質のまま切り出したなら null: `encoder`(`h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`)、`height`(720)、`video_kbps`、`audio_kbps`、`ffmpeg_version`) |
-| `skips` | スキップ区間(クリーン再生用。再生アプリの「スキップ」と同じ計算 `RaceSkips`)。`count`、`total_sec`、`clean_sec`(レースの長さからスキップ区間を除いた長さ)、`ranges[]`: `kind`(`redo` = やり直し / `pause` = 一時停止)、`from_recv_time`・`to_recv_time`、`from_video_sec`・`to_video_sec`(パッケージの動画の秒) |
+| `video` | `file`(`video.mp4`)、`duration_sec`、`fps`、`cut_from_sec`(元の録画の何秒から切り出したか)、`sync_method`(`started_event` / 手動補正があれば `manual` / 割り当てたライブの動画は `manual` / リプレイは `replay_race_time`)、`manual_shift_sec`(録画の手動補正のずらし量。無ければ 0。割り当てた動画は 0)、`audio`(音声を入れたか。2026-10-11 より前のパッケージには無い)、`reencoded`(ffmpeg で作り直したときだけ。元の画質のまま切り出したなら null: `encoder`(`h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`)、`height`(720)、`video_kbps`、`audio_kbps`、`ffmpeg_version`) |
+| `telemetry_retimed` | テレメトリーの `recv_time` を仮想の時刻に振り直したか(リプレイ)。振り直していなければ null。`race` の範囲も仮想の時刻 |
+| `skips` | スキップ区間(クリーン再生用。リプレイは空。再生アプリの「スキップ」と同じ計算 `RaceSkips`)。`count`、`total_sec`、`clean_sec`(レースの長さからスキップ区間を除いた長さ)、`ranges[]`: `kind`(`redo` = やり直し / `pause` = 一時停止)、`from_recv_time`・`to_recv_time`、`from_video_sec`・`to_video_sec`(パッケージの動画の秒) |
 
 再生アプリは、パッケージのレースを `race` の範囲と `course.name`・`car.name` から作る(切り出したテレメトリーで判定をやり直さない)。

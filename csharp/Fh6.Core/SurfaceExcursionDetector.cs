@@ -16,6 +16,12 @@ public sealed record SurfaceExcursion(int StartIndex, int EndIndex, int[] Wheels
 /// 4 輪とも舗装の状態が続いた後に、どれかの車輪が舗装から外れた瞬間を見つけ、その後のスリップを結びつける。
 /// 縁石(surface_rumble 0.24。念のため wheel_on_rumble_strip も)は舗装から外れたとみなさない。
 /// 閾値は暫定(2026-09-27 の 174607・110104・173311 で決めた)。
+///
+/// ダートなどのコース(2026-10-10): 舗装から外れた状態が CourseSec 秒以上続き、その間の CourseShare 以上の行で
+/// 3 輪以上が同じ舗装以外の路面(ダートなど)なら、その路面のコースに入ったとみなし、逸脱にしない
+/// (舗装とダートが半々のコースで、ダートに入るたびにコースアウトのように出ていた。213641・230447。
+/// ダートのコースは縁の芝を踏むことが多く、4 輪そろって続くとは限らない。231149)。
+/// 停止区間(リワインドなど)につながったものは、今までどおり逸脱にする
 /// </summary>
 public static class SurfaceExcursionDetector
 {
@@ -35,6 +41,10 @@ public static class SurfaceExcursionDetector
         public double SlipBeforeSec { get; init; } = 0.3;
         /// <summary>逸脱からこの秒数後までスリップと停止区間を見る</summary>
         public double AfterSec { get; init; } = 2.0;
+        /// <summary>舗装から外れた状態がこの秒数以上続き、</summary>
+        public double CourseSec { get; init; } = 5.0;
+        /// <summary>その間のこの割合以上の行で 3 輪以上が同じ舗装以外の路面なら、その路面のコースに入った(逸脱にしない)</summary>
+        public double CourseShare { get; init; } = 0.6;
     }
 
     public static readonly Options Default = new();
@@ -95,7 +105,34 @@ public static class SurfaceExcursionDetector
             }
             if (PavedBefore(r.Start)) list.Add(Build(r.Start, r.End, r.Bits));
         }
+
+        // ダートなどのコースに入ったものは除く。停止区間につながったものは残す
+        list.RemoveAll(e => !e.EndsInGap && IsCourse(e.StartIndex, e.EndIndex));
         return list;
+
+        // 長く続き、ほとんどの行で 3 輪以上が同じ舗装以外の路面
+        bool IsCourse(int start, int end)
+        {
+            if (timeMs[end] - timeMs[start] < o.CourseSec * 1000) return false;
+            var counts = new Dictionary<SurfaceKind, int>();
+            int rows = 0;
+            for (int j = start; j <= end; j++)
+            {
+                if (isRaceOn[j] != 1 || extended[j]) continue;
+                rows++;
+                var per = new Dictionary<SurfaceKind, int>();
+                for (int w = 0; w < 4; w++)
+                {
+                    if (rumbleStrip[w][j] != 0) continue;
+                    var k = DerivedSeries.ClassifySurface(surfaceRumble[w][j]);
+                    if (k is SurfaceKind.Paved or SurfaceKind.Ramp or SurfaceKind.Kerb or SurfaceKind.Unknown) continue;
+                    per[k] = per.GetValueOrDefault(k) + 1;
+                }
+                foreach (var (k, c) in per)
+                    if (c >= 3) counts[k] = counts.GetValueOrDefault(k) + 1;
+            }
+            return rows > 0 && counts.Count > 0 && counts.Values.Max() >= rows * o.CourseShare;
+        }
 
         SurfaceExcursion Build(int start, int end, int bits)
         {

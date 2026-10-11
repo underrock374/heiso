@@ -443,4 +443,122 @@ public sealed class PackageTests : IDisposable
         File.WriteAllText(notZip, "not a zip");
         Assert.Throws<PackageException>(() => PackageReader.Extract(notZip, Path.Combine(_root, "cache")));
     }
+
+    // ---- 割り当てた動画の書き出し(作業指示 008 ステップ 5) ----
+
+    /// <summary>偽の記録の最終の時間軸の長さ: 0〜2.0 秒(一時停止まで)と、2.0 秒からゴールの行(479 行目)まで</summary>
+    private const double CleanT = 2.0 + (479 / 30.0 - 14.5);
+
+    private static List<double> ReadTimes(ZipArchive zip)
+    {
+        using var csv = new StreamReader(new GZipStream(zip.GetEntry("telemetry.csv.gz")!.Open(), CompressionMode.Decompress));
+        csv.ReadLine();
+        var times = new List<double>();
+        while (csv.ReadLine() is string line) times.Add(double.Parse(line.Split(',')[0], CultureInfo.InvariantCulture));
+        return times;
+    }
+
+    [Fact]
+    public void リプレイを書き出す_テレメトリーは仮想の時刻で_動画はリプレイの先頭以降のキーフレームから()
+    {
+        var folder = MakeSession();
+        var dest = Path.Combine(_root, "replay.heiso.zip");
+        // リプレイ: 動画の 12.0 秒がレースタイム 0、黒の始まりが 12.0 + T
+        var src = new PackageSource(Path.Combine(folder, "rec.mp4"), VideoAlt.ContentReplay, null, 12.0, 12.0 + CleanT, 30);
+        var result = PackageWriter.Write(folder, RaceStart, dest, source: src);
+        var info = result.Info;
+
+        // 頭は 12.0 秒以降の最初のキーフレーム(360 コマ目、表示 361/30 秒)。リプレイの前の画面を入れない
+        Assert.Equal(Math.Round(361.0 / 30, 4), info.Video.CutFromSec);
+        Assert.Equal(361.0 / 30 - 12.0, result.ReplayLateSec!.Value, 3);
+        // 終わりは黒の始まり(= ゴール)の 0.5 秒後を含むコマまで(ゴールの瞬間を入れ、黒の後のループは入れない)
+        Assert.InRange(info.Video.CutFromSec + info.Video.DurationSec, 12.0 + CleanT + 0.5, 12.0 + CleanT + 0.5 + 1.0 / 30 + 1e-6);
+
+        Assert.Equal(("replay", true, "replay_race_time"), (info.Capture, info.TelemetryRetimed, info.Video.SyncMethod));
+        Assert.Equal(0, info.Skips.Count);
+        Assert.Equal(CleanT, info.Race.EndRecvTime - info.Race.StartRecvTime, 3);
+        Assert.Equal(CleanT, info.Race.RaceTimeSec!.Value, 3);
+        Assert.Equal(RaceStart, info.Race.StartRecvTime, 3);   // 仮想の時刻の起点は、最終の時間軸の先頭の行の元の時刻
+
+        using var zip = ZipFile.OpenRead(dest);
+        // テレメトリー: 最終の時間軸の行だけ、時刻は途切れずに増える(一時停止の 2.5 秒が無い)
+        var times = ReadTimes(zip);
+        Assert.Equal(result.TelemetryRows, times.Count);
+        Assert.True(times.Zip(times.Skip(1)).All(p => p.Second > p.First && p.Second - p.First < 0.05));
+        Assert.Equal(CleanT, times[^1] - times[0], 3);
+
+        // session.json: 仮想の時刻 → パッケージの動画の秒 = 12.0 + レースタイム − 切り出しの頭
+        var meta = JsonSerializer.Deserialize<SessionMeta>(ReadEntry(zip, "session.json"), SessionMeta.JsonOptions)!;
+        var map = VideoTimeMap.Create(meta.Video, VideoSyncMethod.StartedEvent, out _)!;
+        Assert.Equal(12.0 + 1.0 - info.Video.CutFromSec, map.ToVideoSec(times[0] + 1.0), 4);
+        Assert.Equal("replay_race_time", meta.Video.VideoZeroMethod);
+        Assert.Empty(meta.Video.SyncSamples);
+        Assert.Empty(meta.Video.ManualSync);
+        Assert.DoesNotContain(meta.Events, e => e.Type == "race_start");   // 元の時刻の出来事は入れない
+        Assert.DoesNotContain("MyUser", ReadEntry(zip, "session.json"));
+    }
+
+    [Fact]
+    public void 割り当てたライブの動画は_録画と同じ範囲とスキップ区間で書き出す()
+    {
+        var folder = MakeSession();
+        // 別のフォルダに置いた、同じ中身の動画(録画の手動補正と同じ点で合わせる)
+        var other = Path.Combine(_root, "other");
+        Directory.CreateDirectory(other);
+        File.Copy(Path.Combine(folder, "rec.mp4"), Path.Combine(other, "gamebar.mp4"));
+        var point = new ManualSyncPoint { RecvTime = RaceStart, VideoSec = 10.1 };
+        var live = PackageWriter.Write(folder, RaceStart, Path.Combine(_root, "live.heiso.zip"),
+            source: new PackageSource(Path.Combine(other, "gamebar.mp4"), VideoAlt.ContentLive, point, null, null, 30));
+        var rec = PackageWriter.Write(folder, RaceStart, Path.Combine(_root, "rec.heiso.zip"));
+
+        Assert.Equal(rec.Info.Video.CutFromSec, live.Info.Video.CutFromSec);
+        Assert.Equal(rec.Info.Video.DurationSec, live.Info.Video.DurationSec);
+        Assert.Equal(rec.TelemetryRows, live.TelemetryRows);
+        Assert.Equal(rec.Info.Skips.Ranges.Select(r => (r.Kind, r.FromVideoSec, r.ToVideoSec)), live.Info.Skips.Ranges.Select(r => (r.Kind, r.FromVideoSec, r.ToVideoSec)));
+        Assert.Equal(("live", (bool?)null, "manual", 0.0), (live.Info.Capture, live.Info.TelemetryRetimed, live.Info.Video.SyncMethod, live.Info.Video.ManualShiftSec));
+        Assert.Equal("live", rec.Info.Capture);
+
+        using var zip = ZipFile.OpenRead(Path.Combine(_root, "live.heiso.zip"));
+        var meta = JsonSerializer.Deserialize<SessionMeta>(ReadEntry(zip, "session.json"), SessionMeta.JsonOptions)!;
+        var map = VideoTimeMap.Create(meta.Video, VideoSyncMethod.StartedEvent, out _)!;
+        Assert.Equal(10.1 - live.Info.Video.CutFromSec, map.ToVideoSec(RaceStart), 3);   // cut_from_sec は 4 桁に丸めてある
+        Assert.Equal("manual", meta.Video.VideoZeroMethod);
+        Assert.Empty(meta.Video.ManualSync);
+    }
+
+    [Fact]
+    public void 同期を合わせていないライブの動画は書き出さない()
+    {
+        var folder = MakeSession();
+        var src = new PackageSource(Path.Combine(folder, "rec.mp4"), VideoAlt.ContentLive, null, null, null, 30);
+        var ex = Assert.Throws<PackageException>(() => PackageWriter.Write(folder, RaceStart, Path.Combine(_root, "n.heiso.zip"), source: src));
+        Assert.Contains("同期", ex.Message);
+    }
+
+    [Fact]
+    public void 音声を入れないを選ぶと音声のトラックを書かない()
+    {
+        var folder = MakeSession();
+        var dest = Path.Combine(_root, "mute.heiso.zip");
+        var info = PackageWriter.Write(folder, RaceStart, dest, noAudio: true).Info;
+        Assert.False(info.Video.Audio);
+        var dir = PackageReader.Extract(dest, Path.Combine(_root, "cache"));
+        Assert.Equal(new[] { "vide" }, Mp4Cut.Inspect(Path.Combine(dir, "video.mp4")).Select(t => t.Handler));
+    }
+
+    [Fact]
+    public void 割り当てた動画のパスはパッケージに入れない()
+    {
+        var folder = MakeSession();
+        var alt = new VideoAlt { Kind = VideoAlt.KindExternal, Content = VideoAlt.ContentLive, RaceStartRecvTime = RaceStart };
+        alt.SetPath(folder, Path.Combine(folder, "rec.mp4"));
+        alt.Path = @"D:\MyUser\Videos\gamebar.mp4";
+        Assert.Null(SessionMeta.SaveVideoAlt(folder, alt));
+        var dest = Path.Combine(_root, "noalt.heiso.zip");
+        PackageWriter.Write(folder, RaceStart, dest);
+        using var zip = ZipFile.OpenRead(dest);
+        var json = ReadEntry(zip, "session.json");
+        Assert.DoesNotContain("video_alt", json);
+        Assert.DoesNotContain("MyUser", json);
+    }
 }

@@ -18,6 +18,10 @@ public sealed class SessionMeta
     public List<SessionEvent> Events { get; set; } = new();
     public WriterStats? Stats { get; set; }
 
+    /// <summary>録画のほかに割り当てた動画(リプレイ・別に録った動画。再生アプリが書く)。無ければ null で、キーを書かない</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<VideoAlt>? VideoAlt { get; set; }
+
     /// <summary>このクラスが知らないキー。読んで書き戻しても消さないために持つ</summary>
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -89,6 +93,41 @@ public sealed class SessionMeta
         var meta = Load(folder);
         if (!meta.Complete) return Strings.T("記録中の記録は変えられません(記録アプリで記録を止めてからにしてください)");
         meta.Video.ManualSync.Clear();
+        meta.Save(folder);
+        return null;
+    }
+
+    /// <summary>
+    /// 割り当てた動画を保存する(同じ id があれば置き換え、無ければ足す。id が空なら alt-N を振る)。updated_at を今にする。
+    /// 保存の直前に読み直すので、知らないキーや他のアプリが足したものは残る。記録中の記録には書かない。書けなければ理由を返す
+    /// </summary>
+    public static string? SaveVideoAlt(string folder, VideoAlt alt)
+    {
+        var meta = Load(folder);
+        if (!meta.Complete) return Strings.T("記録中の記録には保存できません(記録アプリで記録を止めてから保存してください)");
+        var list = meta.VideoAlt ??= new List<VideoAlt>();
+        var now = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
+        if (string.IsNullOrEmpty(alt.Id))
+        {
+            int n = 1;
+            while (list.Any(a => a.Id == $"alt-{n}")) n++;
+            alt.Id = $"alt-{n}";
+        }
+        alt.CreatedAt ??= now;
+        alt.UpdatedAt = now;
+        int at = list.FindIndex(a => a.Id == alt.Id);
+        if (at >= 0) list[at] = alt; else list.Add(alt);
+        meta.Save(folder);
+        return null;
+    }
+
+    /// <summary>割り当てた動画を外す(id で)。最後の 1 つを外したら、キーごと消す。書けなければ理由を返す</summary>
+    public static string? RemoveVideoAlt(string folder, string id)
+    {
+        var meta = Load(folder);
+        if (!meta.Complete) return Strings.T("記録中の記録は変えられません(記録アプリで記録を止めてからにしてください)");
+        meta.VideoAlt?.RemoveAll(a => a.Id == id);
+        if (meta.VideoAlt is { Count: 0 }) meta.VideoAlt = null;
         meta.Save(folder);
         return null;
     }

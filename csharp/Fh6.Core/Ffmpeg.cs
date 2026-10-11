@@ -95,7 +95,8 @@ public static class Ffmpeg
     /// <param name="Height">出力の高さ(元がこれより小さければ縮めない)</param>
     /// <param name="VideoKbps">映像のビットレート(平均)。最大はその 1.5 倍</param>
     /// <param name="AudioKbps">音声のビットレート(AAC)</param>
-    public sealed record Options(string Encoder, int Height = 720, int VideoKbps = 5000, int AudioKbps = 128, double KeyintSec = 1);
+    /// <param name="NoAudio">音声を入れない</param>
+    public sealed record Options(string Encoder, int Height = 720, int VideoKbps = 5000, int AudioKbps = 128, double KeyintSec = 1, bool NoAudio = false);
 
     /// <summary>
     /// 仕様書の配布動画の目安(720p・H.264・キーフレーム 1 秒・5〜8 Mbps)から、元の fps に合わせたビットレート。
@@ -124,10 +125,10 @@ public static class Ffmpeg
         var args = string.Join(' ',
             "-y -hide_banner -nostats -v error -progress pipe:1",
             $"-ss {fromSec.ToString("0.######", inv)} -i \"{source}\" -t {durationSec.ToString("0.######", inv)}",
-            "-map 0:v:0 -map 0:a:0? -sn -dn",
+            o.NoAudio ? "-map 0:v:0 -an -sn -dn" : "-map 0:v:0 -map 0:a:0? -sn -dn",
             $"-vf \"scale=-2:'min({o.Height},ih)':flags=lanczos,format=yuv420p\"",
             $"-c:v {o.Encoder} {rate} -g {gop} -keyint_min {gop} -profile:v high",
-            $"-c:a aac -b:a {o.AudioKbps}k",
+            o.NoAudio ? "" : $"-c:a aac -b:a {o.AudioKbps}k",
             "-movflags +faststart",
             $"\"{dest}\"");
 

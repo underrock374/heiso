@@ -24,6 +24,8 @@ public sealed class LoadedSession
         .Concat(Wheels.Select(w => "wheel_on_rumble_strip_" + w))
         .Concat(Wheels.Select(w => "wheel_in_puddle_" + w))
         .Union(RaceSample.Columns)
+        .Union(RaceTimeline.Columns)
+        .Union(ReplayDetector.Columns)   // リプレイの自動判別の検算(角速度)
         .ToArray();
 
     public required string Folder { get; init; }
@@ -53,7 +55,7 @@ public sealed class LoadedSession
     /// <summary>レースのコース名・車名を session.json の出来事から付け直す(再生アプリで名前を付けた後に。パッケージは package.json のまま)</summary>
     public void RefreshNames()
     {
-        if (Package != null) return;
+        if (Package != null || IsReplay) return;
         Races = Races.Select(r =>
         {
             var (car, setup) = RaceNames.Car(Meta.Events, r.Segment.StartRecvTime);
@@ -83,6 +85,24 @@ public sealed class LoadedSession
     public required double[] Grade { get; init; }
     public required double[] Turn { get; init; }
 
+    /// <summary>
+    /// リプレイの仮想セッションか(ForReplay で作ったもの)。行は最終の時間軸の行だけで、recv_time は連続した仮想の時刻。
+    /// 停止区間もやり直しも無いので、スキップ区間は出さない
+    /// </summary>
+    public bool IsReplay { get; init; }
+
+    /// <summary>リプレイの仮想セッションの、元のレースの最終の時間軸(普通の記録なら null)</summary>
+    public RaceTimeline? Timeline { get; init; }
+
+    /// <summary>リプレイの仮想セッションの先頭の行の仮想の時刻(= 元の記録での、最終の時間軸の先頭の行の recv_time)</summary>
+    public double VirtualStart { get; init; }
+
+    /// <summary>リプレイの仮想の時刻 → レースタイム(仮想の時刻は、レースタイムと同じ速さで進む)</summary>
+    public double RaceTimeAtVirtual(double recv) => Timeline!.RaceTime[0] + (recv - VirtualStart);
+
+    /// <summary>リプレイの、レースタイム → 仮想の時刻</summary>
+    public double VirtualAtRaceTime(double raceTime) => VirtualStart + (raceTime - Timeline!.RaceTime[0]);
+
     public static LoadedSession Load(string folder)
     {
         if (!Directory.Exists(folder))
@@ -106,6 +126,40 @@ public sealed class LoadedSession
         foreach (var c in Columns)
             if (!t.Contains(c)) throw new UserFacingException(Strings.T("テレメトリーに {column} の列がありません", ("column", c)));
 
+        var video = meta.FindVideo(folder);
+        return Build(folder, meta, package, t, video, meta.Video.FileFps ?? (video != null ? VideoDuration.TryReadFrameRate(video) : null),
+            table => package != null ? PackageRaces(table, package) : RaceSegmentDetector.Detect(table).Select(r =>
+            {
+                var (car, setup) = RaceNames.Car(meta.Events, r.StartRecvTime);
+                return (r, RaceNames.Course(meta.Events, r.StartRecvTime), car, setup);
+            }).ToList());
+    }
+
+    /// <summary>
+    /// リプレイの仮想セッションを作る: そのレースの最終の時間軸(RaceTimeline)の行だけを並べ、recv_time を連続した仮想の時刻に振り直す。
+    /// 仮想の時刻の起点は、元の記録での最終の時間軸の先頭の行の時刻。レースは 1 本(元のレースの名前のまま)。
+    /// グラフ・印・距離軸・コース図は、普通の記録と同じ作り方でこの表から作る
+    /// </summary>
+    public LoadedSession ForReplay(int raceIndex, string? videoPath, double? fps)
+    {
+        var (seg, course, car, setup) = Races[raceIndex];
+        var timeline = RaceTimeline.Build(Table, seg);
+        if (timeline.Rows.Count < 2) throw new UserFacingException(Strings.T("このレースには、リプレイに合わせられる走行がありません"));
+        double start = Table[TelemetryTable.RecvTime][timeline.Rows[0]];
+        var vt = timeline.VirtualTable(Table, start);
+        var recv = vt[TelemetryTable.RecvTime];
+        int last = vt.RowCount - 1;
+        var race = seg with
+        {
+            StartIndex = 0, EndIndex = last, FinishIndex = last, StartRecvTime = recv[0], EndRecvTime = recv[last],
+            EndSpeedKmh = Math.Round(vt["speed"][last] * 3.6, 1),
+        };
+        return Build(Folder, Meta, Package, vt, videoPath, fps, _ => new() { (race, course, car, setup) }, isReplay: true, timeline, start);
+    }
+
+    private static LoadedSession Build(string folder, SessionMeta meta, PackageInfo? package, TelemetryTable t, string? video, double? fps,
+        Func<TelemetryTable, List<(RaceSegment, string?, string?, string?)>> races, bool isReplay = false, RaceTimeline? timeline = null, double virtualStart = 0)
+    {
         // 判定の時刻は受信時刻(ms)。timestamp_ms は 60fps 近くでは約 32ms 刻みで、同じ値が続くため
         var ts = t[TelemetryTable.RecvTime].Select(r => r * 1000).ToArray();
         var on = t["is_race_on"];
@@ -116,18 +170,17 @@ public sealed class LoadedSession
             (t["tire_combined_slip_fl"][i] + t["tire_combined_slip_fr"][i]) / 2,
             (t["tire_combined_slip_rl"][i] + t["tire_combined_slip_rr"][i]) / 2)).ToArray();
 
-        var video = meta.FindVideo(folder);
         var starts = StartDetector.Detect(ts, on, t["speed"], t["race_pos"], t["position_x"], t["position_z"], t["dist_traveled"]);
+        // リプレイは先頭の行(レースタイム 0)がスタート。前に停止区間が無いので、止まっていた時間が短いと見つからない
+        // (リプレイを書き出したパッケージも同じ。テレメトリーは最終の時間軸だけ)
+        if ((isReplay || package?.Capture == PackageWriter.CaptureReplay) && !starts.Any(x => x.Kind == StartKind.Race && x.Index < 60))
+            starts.Insert(0, new StartEvent(0, StartKind.Race));
         return new LoadedSession
         {
-            Folder = folder, Meta = meta, Table = t, VideoPath = video, Package = package,
-            Fps = meta.Video.FileFps ?? (video != null ? VideoDuration.TryReadFrameRate(video) : null),
+            Folder = folder, Meta = meta, Table = t, VideoPath = video, Package = package, Fps = fps,
+            IsReplay = isReplay, Timeline = timeline, VirtualStart = virtualStart,
             Starts = starts,
-            Races = package != null ? PackageRaces(t, package) : RaceSegmentDetector.Detect(t).Select(r =>
-            {
-                var (car, setup) = RaceNames.Car(meta.Events, r.StartRecvTime);
-                return (r, RaceNames.Course(meta.Events, r.StartRecvTime), car, setup);
-            }).ToList(),
+            Races = races(t),
             Laps = LapDetector.Detect(ts, on, t["race_pos"], t["lap_no"], t["cur_lap"], t["dist_traveled"],
                                       t["position_x"], t["position_z"], t["yaw"], starts),
             Contacts = ContactDetector.Detect(ts, on, t["speed"], t["acceleration_x"], t["acceleration_z"], extended),
@@ -239,14 +292,14 @@ public sealed class LoadedSession
             }).ToArray(),
             races = Races.Select(r => new
             {
-                t0 = T(r.Segment.StartIndex), t1 = T(r.Segment.EndIndex), restart = r.Segment.Restart,
+                t0 = T(r.Segment.StartIndex), t1 = T(r.Segment.EndIndex), tf = T(r.Segment.FinishIndex), restart = r.Segment.Restart,
                 finished = r.Segment.LikelyFinished, finishedBy = r.Segment.FinishedBy, endKmh = r.Segment.EndSpeedKmh, course = r.Course, car = r.Car, setup = r.Setup,
                 dist = RaceDistanceSeries(r.Segment, pos),
             }).ToArray(),
             // 再生時に飛ばせる区間。kind = "redo": やり直し区間(リワインド・チェックポイント逃しで捨てた走りの始まりから、戻った先で走り直すまで)、
             // "pause": 一時停止(フォトモード・ポーズメニュー。経過時間が止まった停止区間)
             // (計算は Fh6.Core の RaceSkips。配布パッケージの package.json と同じ)
-            skips = RaceSkips.Find(Table, Races.Select(r => r.Segment)).Select(g => new
+            skips = (IsReplay ? new List<SkipRange>() : RaceSkips.Find(Table, Races.Select(r => r.Segment))).Select(g => new
             {
                 t0 = Math.Round(map.ToVideoSec(g.FromRecvTime), 3), t1 = Math.Round(map.ToVideoSec(g.ToRecvTime), 3), kind = g.Kind,
             }).ToArray(),

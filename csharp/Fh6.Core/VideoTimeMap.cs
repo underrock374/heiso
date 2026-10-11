@@ -96,6 +96,16 @@ public sealed class VideoTimeMap
         return new VideoTimeMap(method, recv, video, used, fallback, shift, true);
     }
 
+    /// <summary>
+    /// 動画 0 秒に当たる時刻が分かっているときの変換(動画の秒 = 時刻 − zeroRecvTime)。
+    /// 割り当てた動画(video_alt)で使う: リプレイは仮想の時刻で「仮想の起点 − replay_zero_video_sec」、ライブは同期の点から ForPoint で
+    /// </summary>
+    public static VideoTimeMap FromZero(double zeroRecvTime) =>
+        new(VideoSyncMethod.StartedEvent, new[] { zeroRecvTime }, new[] { 0.0 }, 0, false, 0, false);
+
+    /// <summary>同期の点 1 つ(「この時刻 = 動画のこの秒」)からの変換。割り当てたライブの動画(video_alt の points の最後の 1 点)で使う</summary>
+    public static VideoTimeMap ForPoint(ManualSyncPoint p) => FromZero(p.RecvTime - p.VideoSec);
+
     /// <summary>往復 150ms 以下(往復が無い古い点は採用)で、recv_time と動画秒がともに前の点より増えている点だけ</summary>
     private static List<(double Recv, double Video)> UsablePoints(List<double[]> samples)
     {

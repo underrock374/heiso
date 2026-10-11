@@ -11,8 +11,8 @@
   zip の中身:
     HeisoRecorder\  記録アプリ
     HeisoPlayer\    再生アプリ
-    docs\           入れ方(install.md)・使い方(usage.md)・記録データの形式(session-format.md)と画像
-    README.md / LICENSE / THIRD-PARTY-NOTICES.md / CHANGELOG.md
+    docs\           入れ方(install.md)・使い方(usage.md)・記録データの形式(session-format.md)と画像。docs\en\ に入れ方・使い方の英語版
+    README.md / README.en.md / LICENSE / THIRD-PARTY-NOTICES.md / CHANGELOG.md
 
   個人設定(appsettings.Local.json)やログなど、配ってはいけないものが紛れ込んでいたら止める。
 #>
@@ -58,11 +58,16 @@ foreach ($f in $flavors) {
 
     # 文書(README の docs\ へのリンクがそのまま使えるように、同じ並びで)
     New-Item -ItemType Directory -Path (Join-Path $stage "docs\images") | Out-Null
-    foreach ($doc in @("README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "CHANGELOG.md")) {
+    New-Item -ItemType Directory -Path (Join-Path $stage "docs\en") | Out-Null
+    foreach ($doc in @("README.md", "README.en.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "CHANGELOG.md")) {
         Copy-Item (Join-Path $root $doc) $stage
     }
     foreach ($doc in @("install.md", "usage.md", "session-format.md")) {
         Copy-Item (Join-Path $root "docs\$doc") (Join-Path $stage "docs")
+    }
+    # 英語版(機械翻訳。画像は日本語版と同じものを ..\images から使う)
+    foreach ($doc in @("install.md", "usage.md")) {
+        Copy-Item (Join-Path $root "docs\en\$doc") (Join-Path $stage "docs\en")
     }
     foreach ($dir in @("install", "usage")) {
         Copy-Item (Join-Path $root "docs\images\$dir") (Join-Path $stage "docs\images") -Recurse
@@ -73,7 +78,7 @@ foreach ($f in $flavors) {
     if ($bad) { throw "配ってはいけないファイルが入っています: $(($bad | ForEach-Object { $_.FullName }) -join ', ')" }
     foreach ($must in @("HeisoRecorder\HeisoRecorder.exe", "HeisoRecorder\appsettings.json", "HeisoRecorder\appsettings.Local.example.json",
                         "HeisoRecorder\wwwroot\index.html", "HeisoPlayer\HeisoPlayer.exe", "HeisoPlayer\wwwroot\index.html",
-                        "HeisoPlayer\WebView2Loader.dll", "docs\install.md", "LICENSE", "THIRD-PARTY-NOTICES.md")) {
+                        "HeisoPlayer\WebView2Loader.dll", "docs\install.md", "docs\en\install.md", "README.en.md", "LICENSE", "THIRD-PARTY-NOTICES.md")) {
         if (-not (Test-Path (Join-Path $stage $must))) { throw "$must がありません" }
     }
 

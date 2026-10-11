@@ -29,6 +29,25 @@ public class VideoDurationTests
     }
 
     [Fact]
+    public void コマの間隔が一定ならVFRでない()
+    {
+        Assert.False(VideoDuration.TryReadIsVariableFrameRate(TestFile("normal.mp4")));
+        Assert.Null(VideoDuration.TryReadIsVariableFrameRate(TestFile("fragmented.mp4")));   // Fragmented は調べない
+        Assert.Null(VideoDuration.TryReadIsVariableFrameRate(TestFile("missing.mp4")));
+        // OBS の録画: 一定の間隔と、最後の 1 コマだけ違う
+        Assert.False(VideoDuration.LooksVariable(new (uint, uint)[] { (18000, 512), (1, 300) }));
+    }
+
+    [Fact]
+    public void コマの間隔がばらつけばVFR()
+    {
+        // Game Bar などの可変フレームレート: 間隔がばらつくコマが 1% を超える
+        Assert.True(VideoDuration.LooksVariable(new (uint, uint)[] { (900, 512), (30, 1024), (40, 400), (900, 512) }));
+        // 1% 以下のばらつきは一定とみなす
+        Assert.False(VideoDuration.LooksVariable(new (uint, uint)[] { (1000, 512), (5, 1024), (1000, 512) }));
+    }
+
+    [Fact]
     public void MKVはnull()
     {
         var path = Path.Combine(Path.GetTempPath(), $"heiso-test-{Guid.NewGuid():N}.mkv");

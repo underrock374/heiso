@@ -35,6 +35,10 @@ header .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: 
 header label, header button { white-space: nowrap; flex: none; }
 header label { display: inline-flex; align-items: center; gap: 6px; }
 header #race { max-width: 420px; }
+/* 幅が足りないときは、レースの選択から縮める(上の欄のボタンが画面の外に出ないように) */
+header label:has(#race) { flex: 0 1 auto; min-width: 0; }
+header label:has(#race) select { min-width: 140px; width: 100%; }
+header #videoSel { max-width: 220px; }
 header .spacer { flex: 1; }
 
 button, select {
@@ -185,3 +189,28 @@ button:disabled { opacity: 0.4; cursor: default; }
   background: var(--pointer);
   pointer-events: none;
 }
+
+/* 動画を追加(作業指示 008) */
+.settingsDlg section > .row { margin: 10px 0 2px; }
+.settingsDlg p.warn { color: var(--error); }
+.manual p.warn { color: var(--error); }
+
+/* 同期の微調整の小窓(動画の上に浮かべる) */
+.syncFloat { position: fixed; z-index: 20; width: 360px; background: var(--panel); border: 1px solid var(--accent); border-radius: 8px;
+  padding: 6px 10px 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+.syncFloat .sfHead { display: flex; align-items: center; gap: 6px; cursor: move; font-weight: 600; padding-bottom: 4px; user-select: none; }
+.syncFloat .sfHead .spacer { flex: 1; }
+.syncFloat .sfHead button { padding: 0 8px; }
+.syncFloat .sfRow { display: flex; align-items: center; gap: 4px; margin: 6px 0; flex-wrap: wrap; }
+.syncFloat .sfRow button { padding: 4px 6px; white-space: nowrap; }
+.syncFloat .sfLabel { color: var(--muted); width: 52px; white-space: nowrap; }
+.syncFloat p { margin: 4px 0; }
+.syncFloat .sfShift { font-weight: 600; }
+
+/* リプレイの自動判別の結果(レースごと) */
+.rfList { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.rfRow { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+.rfRow.found { border-color: var(--accent); }
+.rfRow .rfHead { font-weight: 600; }
+.rfRow .error { color: var(--error); }
+.rfRow button { align-self: flex-end; }

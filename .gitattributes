@@ -21,7 +21,11 @@ docs/tasks/                 export-ignore
 docs/spec.md                export-ignore
 docs/telemetry-field-notes.md export-ignore
 docs/development.md         export-ignore
+docs/claude-code-notes.md   export-ignore
+docs/project-overview.md    export-ignore
+docs/ideas/                 export-ignore
 tools/release.ps1           export-ignore
+tools/dev/                  export-ignore
 # 解析・開発側のツール(今は配布する理由がない)
 python/**                   export-ignore
 # テストに使う小さな動画(生成したダミー)だけ出す。実データの抜き出しは出さない

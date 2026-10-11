@@ -37,8 +37,10 @@ public sealed class PackageInfo
     public Assists Assists { get; set; } = new();
     /// <summary>視点(chase / hood / cockpit など)。今は記録していないので null</summary>
     public string? View { get; set; }
-    /// <summary>ライブ録画か("live")リプレイ録画か("replay")。今は記録していないので null</summary>
+    /// <summary>ライブ走行の動画か("live")リプレイか("replay")。2026-10-11 より前のパッケージは null</summary>
     public string? Capture { get; set; }
+    /// <summary>テレメトリーの recv_time を仮想の時刻に振り直したか(リプレイ)。振り直していなければ null</summary>
+    public bool? TelemetryRetimed { get; set; }
     public PackageRace Race { get; set; } = new();
     public PackageVideo Video { get; set; } = new();
     public PackageSkips Skips { get; set; } = new();
@@ -115,6 +117,21 @@ public sealed class PackageVideo
     public double ManualShiftSec { get; set; }
     /// <summary>作り直した(720p など)ときの中身。元の画質のまま切り出したなら null</summary>
     public PackageReencode? Reencoded { get; set; }
+    /// <summary>音声を入れたか(「音声を入れない」を選ぶと false。2026-10-11 より前のパッケージは null)</summary>
+    public bool? Audio { get; set; }
+}
+
+/// <summary>
+/// 書き出す動画が録画でないとき(割り当てた動画。session.json の video_alt)。
+/// Content が live なら LivePoint(最後の同期の点)で、replay なら ReplayZeroVideoSec(レースタイム 0 の動画の秒)で時刻を対応させる
+/// </summary>
+public sealed record PackageSource(string VideoPath, string Content, ManualSyncPoint? LivePoint, double? ReplayZeroVideoSec, double? ReplayEndVideoSec, double? Fps)
+{
+    public bool IsReplay => Content == VideoAlt.ContentReplay;
+
+    /// <summary>割り当てた動画から(foundPath は VideoAlt.Locate で見つけた動画)</summary>
+    public static PackageSource FromAlt(VideoAlt alt, string foundPath) =>
+        new(foundPath, alt.Content, alt.Sync.Points.LastOrDefault(), alt.Sync.ReplayZeroVideoSec, alt.Sync.ReplayEndVideoSec, alt.File.Fps);
 }
 
 /// <summary>書き出しで動画を作り直した中身(ffmpeg)</summary>
@@ -153,7 +170,11 @@ public sealed class PackageSkip
 }
 
 /// <summary>書き出しの結果</summary>
-public sealed record PackageResult(string Path, long Bytes, PackageInfo Info, int TelemetryRows, double ElapsedSec);
+public sealed record PackageResult(string Path, long Bytes, PackageInfo Info, int TelemetryRows, double ElapsedSec)
+{
+    /// <summary>リプレイを書き出したとき、動画の頭がリプレイの先頭から何秒遅れたか(作り直さずに切り出すと、キーフレームまで遅れる)</summary>
+    public double? ReplayLateSec { get; init; }
+}
 
 /// <summary>
 /// 記録(セッションフォルダ)のレース 1 本を .heiso.zip に書き出す。
@@ -165,16 +186,33 @@ public static class PackageWriter
     public const double MarginSec = 5;
     public const string TelemetryName = "telemetry.csv.gz";
 
+    /// <summary>
+    /// リプレイの終わり(黒の始まり)のこの秒数後で切る。リプレイはゴールの瞬間に黒になるので、黒の手前で切るとゴールの直前で止まる
+    /// (164031 で、ゴールのゲートの手前で動画が終わっていた。2026-10-11)。黒は数秒以上続くので、その後のループは入らない
+    /// </summary>
+    public const double ReplayTailSec = 0.5;
+
+    /// <summary>作り直さずに切り出したリプレイの頭が、リプレイの先頭からこの秒数以上遅れたら、作り直しを勧める</summary>
+    public const double ReplayLateWarnSec = 3;
+
+    public const string CaptureLive = "live";
+    public const string CaptureReplay = "replay";
+    public const string SyncReplayRaceTime = "replay_race_time";
+
     private static readonly string[] Columns = RaceSample.Columns
         .Concat(RaceSkips.Columns)
+        .Concat(RaceTimeline.Columns)
         .Concat(new[] { "lap_no" })   // 完走の判定(ゴールで周回数が増えたか)と周回数
         .Distinct().ToArray();
 
     /// <param name="raceStartRecvTime">書き出すレースの開始の recv_time(RaceSegment.StartRecvTime)</param>
     /// <param name="reencode">作り直すなら ffmpeg の場所と中身。null なら元の画質のまま切り出す</param>
     /// <param name="progress">進み具合(0〜1)。作り直すときの ffmpeg の進みを 0〜0.95 に、Zip を書き終えたら 1</param>
+    /// <param name="source">録画でなく割り当てた動画を書き出すとき。null なら録画</param>
+    /// <param name="noAudio">音声を入れない</param>
     public static PackageResult Write(string sessionFolder, double raceStartRecvTime, string destPath,
-                                      PackageReencodeOptions? reencode = null, IProgress<double>? progress = null, CancellationToken ct = default)
+                                      PackageReencodeOptions? reencode = null, IProgress<double>? progress = null, CancellationToken ct = default,
+                                      PackageSource? source = null, bool noAudio = false)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         if (PackageInfo.TryLoad(sessionFolder) != null) throw new PackageException(Strings.T("パッケージから、もう一度パッケージは作れません。元の記録を開いてください"));
@@ -184,16 +222,58 @@ public static class PackageWriter
         catch (Exception ex) { throw new PackageException(Strings.T("session.json を読めませんでした: {error}", ("error", ex.Message))); }
         if (!meta.Complete) throw new PackageException(Strings.T("記録中の記録からは作れません(記録アプリで記録を止めてからにしてください)"));
 
-        var video = meta.FindVideo(sessionFolder) ?? throw new PackageException(Strings.T("録画ファイルが見つかりません"));
-        var map = VideoTimeMap.Create(meta.Video, VideoSyncMethod.StartedEvent, out _);
-        if (map == null || map.IsFallback || meta.Video.StartedEventRecvTime is not double startedEvent)
-            throw new PackageException(Strings.T("録画開始の時刻が記録されていません(古い記録は「HeisoRecorder --resync」で作り直してください)"));
+        // ---- 書き出す動画と、時刻の対応(テレメトリーの時刻 → 元の動画の秒。リプレイは仮想の時刻から) ----
+        string video;
+        VideoTimeMap? recordingMap = null;
+        if (source == null)
+        {
+            video = meta.FindVideo(sessionFolder) ?? throw new PackageException(Strings.T("録画ファイルが見つかりません"));
+            recordingMap = VideoTimeMap.Create(meta.Video, VideoSyncMethod.StartedEvent, out _);
+            if (recordingMap == null || recordingMap.IsFallback || meta.Video.StartedEventRecvTime == null)
+                throw new PackageException(Strings.T("録画開始の時刻が記録されていません(古い記録は「HeisoRecorder --resync」で作り直してください)"));
+        }
+        else
+        {
+            video = File.Exists(source.VideoPath) ? source.VideoPath
+                : throw new PackageException(Strings.T("動画が見つかりません: {file}", ("file", Path.GetFileName(source.VideoPath))));
+            if (source.IsReplay && source.ReplayZeroVideoSec == null) throw new PackageException(Strings.T("リプレイの先頭が決まっていません"));
+            if (!source.IsReplay && source.LivePoint == null)
+                throw new PackageException(Strings.T("この動画はまだ同期を合わせていません(「同期の手動補正」で 1 点合わせてから書き出してください)"));
+        }
 
         var csvPath = Path.Combine(sessionFolder, string.IsNullOrEmpty(meta.Files.TelemetryCsv) ? SessionWriter.CsvName : meta.Files.TelemetryCsv);
         if (!File.Exists(csvPath)) throw new PackageException(Strings.T("テレメトリーのファイルがありません: {file}", ("file", Path.GetFileName(csvPath))));
         var t = TelemetryTable.Load(csvPath, Columns);
         var race = RaceSegmentDetector.Detect(t).FirstOrDefault(r => Math.Abs(r.StartRecvTime - raceStartRecvTime) < RaceNames.SameRowSec)
                    ?? throw new PackageException(Strings.T("指定したレースが記録の中に見つかりません"));
+        var recv = t[TelemetryTable.RecvTime];
+
+        VideoTimeMap map;
+        RaceTimeline? timeline = null;
+        double[]? virtualTimes = null;
+        double from, to;
+        if (source?.IsReplay == true)
+        {
+            // リプレイ: 最終の時間軸を仮想の時刻に振り直す。動画の秒 = 先頭の秒 + レースタイム
+            double zero = source.ReplayZeroVideoSec!.Value;
+            timeline = RaceTimeline.Build(t, race);
+            if (timeline.Rows.Count < 2) throw new PackageException(Strings.T("このレースには、リプレイに合わせられる走行がありません"));
+            double vstart = recv[timeline.Rows[0]];
+            virtualTimes = timeline.Retime(vstart);
+            map = VideoTimeMap.FromZero(vstart - timeline.RaceTime[0] - zero);
+            // 先頭から、終わり(黒の始まり = ゴール)の少し後まで。リプレイの前の画面と、黒の後のループを入れない
+            from = zero;
+            to = (source.ReplayEndVideoSec ?? zero + timeline.DurationSec) + ReplayTailSec;
+        }
+        else
+        {
+            map = source == null ? recordingMap! : VideoTimeMap.ForPoint(source.LivePoint!);
+            from = Math.Max(0, map.ToVideoSec(race.StartRecvTime) - MarginSec);
+            // 終わりはゴールの行(ゴール直後の断片を除いた、レース中の最後の行)から。断片はリザルト画面の後に出るので、
+            // 最後の行から数えるとリザルト画面(ランキング = 自分や他のプレイヤーの名前)がまるごと入る
+            to = map.ToVideoSec(recv[race.FinishIndex]) + MarginSec;
+        }
+        double? fileFps = source == null ? meta.Video.FileFps : source.Fps;
 
         // ---- 動画を切る(一時ファイルに。書き出し先と同じフォルダ) ----
         var destDir = Path.GetDirectoryName(Path.GetFullPath(destPath))!;
@@ -202,15 +282,11 @@ public static class PackageWriter
         var tmpZip = destPath + ".part";
         try
         {
-            double from = Math.Max(0, map.ToVideoSec(race.StartRecvTime) - MarginSec);
-            // 終わりはゴールの行(ゴール直後の断片を除いた、レース中の最後の行)から。断片はリザルト画面の後に出るので、
-            // 最後の行から数えるとリザルト画面(ランキング = 自分や他のプレイヤーの名前)がまるごと入る
-            double to = map.ToVideoSec(t[TelemetryTable.RecvTime][race.FinishIndex]) + MarginSec;
             Mp4Cut.Result cut;
             PackageReencode? reencoded = null;
             if (reencode == null)
             {
-                try { cut = Mp4Cut.Cut(video, tmpVideo, from, to); }
+                try { cut = Mp4Cut.Cut(video, tmpVideo, from, to, startAtOrAfter: timeline != null, noAudio: noAudio); }
                 catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or EndOfStreamException)
                 {
                     throw new PackageException(Strings.T("録画ファイルを切り出せませんでした: {error}", ("error", ex.Message)));
@@ -218,20 +294,26 @@ public static class PackageWriter
             }
             else
             {
-                (cut, reencoded) = Reencode(video, tmpVideo, from, to, meta.Video.FileFps, reencode, progress, ct);
+                var r = noAudio ? reencode with { Encode = reencode.Encode with { NoAudio = true } } : reencode;
+                (cut, reencoded) = Reencode(video, tmpVideo, from, to, fileFps, r, progress, ct);
             }
             ct.ThrowIfCancellationRequested();
 
-            // 切り出した範囲のテレメトリー時刻
+            // 切り出した範囲のテレメトリー時刻(リプレイは仮想の時刻)
             double r0 = map.ToRecvTime(cut.StartSec), r1 = map.ToRecvTime(cut.EndSec);
 
             // ---- session.json と package.json ----
-            var newMeta = CutSession(meta, cut, r0, r1, race.StartRecvTime);
-            newMeta.Video.FileFps ??= VideoDuration.TryReadFrameRate(tmpVideo);   // 古い記録には file_fps が無い
+            var sourceSession = Path.GetFileName(Path.GetFullPath(sessionFolder).TrimEnd('\\', '/'));
+            var newMeta = source == null
+                ? CutSession(meta, cut, r0, r1, race.StartRecvTime)
+                : CutSessionAlt(meta, cut, map.ToRecvTime(0), r0, r1, race.StartRecvTime, timeline != null);
+            if (source != null) newMeta.Video.FileFps = source.Fps;
+            newMeta.Video.FileFps ??= VideoDuration.TryReadFrameRate(tmpVideo);   // 古い記録や割り当てた動画には file_fps が無いことがある
             var newMap = VideoTimeMap.Create(newMeta.Video, VideoSyncMethod.StartedEvent, out _)!;
-            var info = BuildInfo(meta, t, race, cut, map, newMap, Path.GetFileName(Path.GetFullPath(sessionFolder).TrimEnd('\\', '/')));
+            var info = BuildInfo(meta, t, race, cut, map, newMap, sourceSession, timeline, virtualTimes, alt: source != null);
             info.Video.Fps = newMeta.Video.FileFps;
             info.Video.Reencoded = reencoded;
+            info.Video.Audio = !noAudio;
 
             // ---- Zip(一時ファイルに書いてから名前を変える) ----
             int rows;
@@ -241,7 +323,7 @@ public static class PackageWriter
                 WriteText(zip, PackageInfo.FileName, JsonSerializer.Serialize(info, SessionMeta.JsonOptions));
                 WriteText(zip, SessionMeta.FileName, JsonSerializer.Serialize(newMeta, SessionMeta.JsonOptions));
                 using (var es = zip.CreateEntry(TelemetryName, CompressionLevel.NoCompression).Open())
-                    rows = CutTelemetry(csvPath, es, r0, r1);
+                    rows = timeline != null ? RetimeTelemetry(csvPath, es, timeline.Rows, virtualTimes!) : CutTelemetry(csvPath, es, r0, r1);
                 using (var es = zip.CreateEntry(PackageInfo.VideoName, CompressionLevel.NoCompression).Open())
                 using (var vs = File.OpenRead(tmpVideo))
                     vs.CopyTo(es, 1 << 20);
@@ -249,7 +331,10 @@ public static class PackageWriter
             ct.ThrowIfCancellationRequested();
             File.Move(tmpZip, destPath, overwrite: true);
             progress?.Report(1);
-            return new PackageResult(destPath, new FileInfo(destPath).Length, info, rows, sw.Elapsed.TotalSeconds);
+            return new PackageResult(destPath, new FileInfo(destPath).Length, info, rows, sw.Elapsed.TotalSeconds)
+            {
+                ReplayLateSec = timeline != null ? Math.Round(cut.StartSec - from, 3) : null,
+            };
         }
         finally
         {
@@ -319,10 +404,32 @@ public static class PackageWriter
         m.Files.TelemetryCsv = TelemetryName;
         m.Files.TelemetryRaw = null;
         m.Stats = null;
+        m.VideoAlt = null;   // 割り当てた動画(その PC のパスを含む)は入れない
 
         bool InRange(double t) => t >= r0 && t <= r1;
         m.Markers = m.Markers.Where(k => InRange(k.RecvTime)).ToList();
         m.Events = m.Events.Where(e => InRange(e.RecvTime) || AboutRace(e, raceStartRecvTime)).ToList();
+        return m;
+    }
+
+    /// <summary>
+    /// 割り当てた動画を書き出すときの session.json。動画 0 秒の時刻 zeroRecv(リプレイは仮想の時刻)に cut の頭を足し、
+    /// 録画の対応(sync_samples)と手動補正は入れない。リプレイは時刻を振り直すので、出来事はこのレースを後から直したものだけ・印は入れない
+    /// </summary>
+    public static SessionMeta CutSessionAlt(SessionMeta meta, Mp4Cut.Result cut, double zeroRecv, double r0, double r1, double raceStartRecvTime, bool replay)
+    {
+        var m = CutSession(meta, cut, r0, r1, raceStartRecvTime);
+        var v = m.Video;
+        v.VideoZeroRecvTime = zeroRecv + cut.StartSec;
+        v.StartedEventRecvTime = zeroRecv + cut.StartSec;
+        v.VideoZeroMethod = replay ? SyncReplayRaceTime : "manual";
+        v.SyncSamples = new();
+        v.ManualSync = new();
+        if (replay)
+        {
+            m.Markers = new();
+            m.Events = meta.Events.Where(e => AboutRace(e, raceStartRecvTime)).ToList();
+        }
         return m;
     }
 
@@ -332,13 +439,17 @@ public static class PackageWriter
         && jv.TryGetValue<double>(out var t) && Math.Abs(t - raceStart) < RaceNames.SameRowSec;
 
     private static PackageInfo BuildInfo(SessionMeta meta, TelemetryTable t, RaceSegment race, Mp4Cut.Result cut,
-                                         VideoTimeMap map, VideoTimeMap newMap, string sourceSession)
+                                         VideoTimeMap map, VideoTimeMap newMap, string sourceSession,
+                                         RaceTimeline? timeline = null, double[]? virtualTimes = null, bool alt = false)
     {
         var (car, setup) = RaceNames.Car(meta.Events, race.StartRecvTime);
         int? Int(string col) => t.Contains(col) && double.IsFinite(t[col][race.StartIndex]) ? (int)t[col][race.StartIndex] : null;
 
-        var skips = RaceSkips.Find(t, new[] { race });
-        double raceSec = t[TelemetryTable.RecvTime][race.FinishIndex] - race.StartRecvTime;
+        // リプレイは、やり直し・一時停止を除いた時間軸なのでスキップ区間は無い
+        var skips = timeline != null ? new List<SkipRange>() : RaceSkips.Find(t, new[] { race });
+        double raceStart = timeline != null ? virtualTimes![0] : race.StartRecvTime;
+        double raceEnd = timeline != null ? virtualTimes![^1] : t[TelemetryTable.RecvTime][race.FinishIndex];
+        double raceSec = raceEnd - raceStart;
         double skipSec = skips.Sum(g => g.Sec);
 
         double? raceTime = null;
@@ -363,17 +474,19 @@ public static class PackageWriter
             },
             Autodrive = meta.Session.Autodrive,
             Assists = meta.Session.Assists,
+            Capture = timeline != null ? CaptureReplay : CaptureLive,
+            TelemetryRetimed = timeline != null ? true : null,
             Race = new PackageRace
             {
-                StartRecvTime = race.StartRecvTime, EndRecvTime = t[TelemetryTable.RecvTime][race.FinishIndex], Restart = race.Restart,
+                StartRecvTime = raceStart, EndRecvTime = raceEnd, Restart = race.Restart,
                 Finished = race.LikelyFinished, FinishedBy = race.FinishedBy, EndReason = race.EndReason, RaceTimeSec = raceTime, Laps = CountLaps(t, race),
             },
             Video = new PackageVideo
             {
                 DurationSec = Math.Round(cut.EndSec - cut.StartSec, 4),
                 CutFromSec = Math.Round(cut.StartSec, 4),
-                SyncMethod = map.HasManualSync ? "manual" : "started_event",
-                ManualShiftSec = Math.Round(map.ManualShiftSec, 4),
+                SyncMethod = timeline != null ? SyncReplayRaceTime : alt || map.HasManualSync ? "manual" : "started_event",
+                ManualShiftSec = alt ? 0 : Math.Round(map.ManualShiftSec, 4),
             },
             Skips = new PackageSkips
             {
@@ -426,6 +539,35 @@ public static class PackageWriter
             rows++;
         }
         return rows;
+    }
+
+    /// <summary>
+    /// リプレイのテレメトリー: 見出しと、rows(元の CSV のデータ行の番号。空行は数えない。昇順)の行を、recv_time だけ times に置き換えて書く。
+    /// ほかの欄は元の文字のまま。書いた行の数を返す
+    /// </summary>
+    private static int RetimeTelemetry(string csvPath, Stream dest, IReadOnlyList<int> rows, double[] times)
+    {
+        using var src = new GZipStream(File.OpenRead(csvPath), CompressionMode.Decompress);
+        using var reader = new StreamReader(src, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
+        using var gz = new GZipStream(dest, CompressionLevel.Optimal, leaveOpen: true);
+        using var writer = new StreamWriter(gz, new UTF8Encoding(false), 1 << 16) { NewLine = "\n" };
+        var header = reader.ReadLine() ?? throw new PackageException(Strings.T("テレメトリーの CSV が空です"));
+        int col = Array.IndexOf(header.TrimStart('﻿').Split(',').Select(c => c.Trim()).ToArray(), TelemetryTable.RecvTime);
+        if (col < 0) throw new PackageException(Strings.T("テレメトリーに recv_time の列がありません"));
+        writer.WriteLine(header);
+        int index = -1, k = 0;
+        string? line;
+        while (k < rows.Count && (line = reader.ReadLine()) != null)
+        {
+            if (line.Length == 0) continue;   // TelemetryTable.Load と同じに、空行は行として数えない
+            index++;
+            if (index != rows[k]) continue;
+            var fields = line.Split(',');
+            if (col < fields.Length) fields[col] = times[k].ToString("0.######", CultureInfo.InvariantCulture);
+            writer.WriteLine(string.Join(',', fields));
+            k++;
+        }
+        return k;
     }
 
     /// <summary>カンマ区切りの n 番目(0 起点)の欄</summary>

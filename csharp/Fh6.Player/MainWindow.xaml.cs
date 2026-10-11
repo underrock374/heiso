@@ -120,6 +120,7 @@ public partial class MainWindow : Window
     }
 
     private bool _restoreQuiet;   // 読み直した理由が言語の切り替え(「画面が止まった」とは知らせない)
+    private int? _restoreRace;    // 読み直した後に選ぶレース(動画を切り替えたとき)
 
     private async void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -167,8 +168,9 @@ public partial class MainWindow : Window
                     SendSession(keepVideo: false);
                     if (_restoreSec is double rs)
                     {
-                        Post(new { type = "restore", sec = rs, play = _restorePlay, quiet = _restoreQuiet });
+                        Post(new { type = "restore", sec = rs, play = _restorePlay, quiet = _restoreQuiet, race = _restoreRace });
                         _restoreQuiet = false;
+                        _restoreRace = null;
                         PlayerLog.Info($"画面を立て直した(動画 {rs:F1} 秒へ{(_restorePlay ? "、再生を続ける" : "")})");
                         _restoreSec = null;
                     }
@@ -193,7 +195,8 @@ public partial class MainWindow : Window
                 {
                     int race = er.GetInt32();
                     bool reencode = msg.TryGetProperty("mode", out var em) && em.GetString() == "720";
-                    _ = Dispatcher.InvokeAsync(() => ExportAsync(race, reencode));   // 保存先を選ぶ画面も、メッセージの処理を終えてから
+                    bool noAudio = msg.TryGetProperty("noAudio", out var na) && na.ValueKind == JsonValueKind.True;
+                    _ = Dispatcher.InvokeAsync(() => ExportAsync(race, reencode, noAudio));   // 保存先を選ぶ画面も、メッセージの処理を終えてから
                 }
                 break;
             case "cancelJob":
@@ -220,7 +223,7 @@ public partial class MainWindow : Window
                 _settings.Save();
                 break;
             case "manualSync":
-                SaveManualSync(msg);
+                if (!AltManualSync(msg)) SaveManualSync(msg);
                 break;
             case "raceNamesForm":
                 SendRaceNamesForm(msg.GetProperty("race").GetInt32());
@@ -229,7 +232,7 @@ public partial class MainWindow : Window
                 EditRaceNames(msg);
                 break;
             case "clearManualSync":
-                ClearManualSync();
+                if (!AltClearSync()) ClearManualSync();
                 break;
             case "method":
                 if (Enum.TryParse<VideoSyncMethod>(msg.GetProperty("method").GetString(), out var m))
@@ -237,6 +240,9 @@ public partial class MainWindow : Window
                     _method = m;
                     SendSession(keepVideo: true);
                 }
+                break;
+            default:
+                OnAltMessage(type, msg);
                 break;
         }
     }
@@ -356,6 +362,7 @@ public partial class MainWindow : Window
                 PlayerLog.Info($"パッケージを展開した: {folder}({sw.ElapsedMilliseconds} ms)");
             }
             _session = await Task.Run(() => LoadedSession.Load(folder));
+            ResetAlt();
             _packageFile = package;
             if (package != null)
             {
@@ -401,11 +408,21 @@ public partial class MainWindow : Window
     /// 選んでいるレースを配布パッケージに書き出す。reencode なら ffmpeg で 720p に作り直す(数分かかるので、進み具合と中止を画面に出す)。
     /// 保存先を選ぶ画面を出すので、WebView2 のイベントの外(Dispatcher から)で呼ぶこと
     /// </summary>
-    private async Task ExportAsync(int raceIndex, bool reencode)
+    private async Task ExportAsync(int raceIndex, bool reencode, bool noAudio)
     {
         var s = _session;
         if (s == null || _exporting || _choosing) return;
         if (s.Package != null) { Toast(error: Strings.T("パッケージから、もう一度パッケージは作れません。元の記録を開いてください")); return; }
+        // 割り当てた動画を表示していれば、その動画を書き出す(レースは割り当てたレース。リプレイの表示ではレースが 1 本だけなので)
+        PackageSource? source = null;
+        var alt = ActiveAlt();
+        if (alt != null)
+        {
+            raceIndex = AltRaceIndex(alt);
+            var loc = alt.Locate(s.Folder);
+            if (loc.Status != VideoAltStatus.Found || raceIndex < 0) { Toast(error: Strings.T("動画が見つかりません。右の欄「この動画」の「動画を選び直す…」で選び直してください")); return; }
+            source = PackageSource.FromAlt(alt, loc.FoundPath!);
+        }
         if (raceIndex < 0 || raceIndex >= s.Races.Count) return;
         var race = s.Races[raceIndex];
         _settings.ExportMode = reencode ? "720" : "copy";
@@ -419,7 +436,7 @@ public partial class MainWindow : Window
             if (st.Path == null) { Toast(error: Strings.T("ffmpeg が見つかりません。設定の「書き出し」で ffmpeg の場所を指定してください")); return; }
             var enc = st.Selected;
             if (enc == null) { Toast(error: Strings.T("この PC で使える H.264 のエンコーダが ffmpeg にありません(設定の「書き出し」で確かめられます)")); return; }
-            double fps = s.Fps ?? 30;
+            double fps = (source != null ? source.Fps : s.Fps) ?? 30;
             options = new PackageReencodeOptions(st.Path, new Ffmpeg.Options(enc, VideoKbps: Ffmpeg.DefaultVideoKbps(fps)));
         }
 
@@ -428,6 +445,7 @@ public partial class MainWindow : Window
         try
         {
             var name = PackageWriter.DefaultFileName(Path.GetFileName(s.Folder), race.Course, race.Car);
+            if (source?.IsReplay == true) name = name[..^PackageInfo.Extension.Length] + "_replay" + PackageInfo.Extension;
             if (reencode) name = name[..^PackageInfo.Extension.Length] + "_720p" + PackageInfo.Extension;
             var dlg = new SaveFileDialog
             {
@@ -454,7 +472,8 @@ public partial class MainWindow : Window
         var what = reencode ? Strings.T("{n} レース目を 720p で書き出しています({encoder})", ("n", raceIndex + 1), ("encoder", Ffmpeg.EncoderName(options!.Encode.Encoder)))
                             : Strings.T("{n} レース目を書き出しています", ("n", raceIndex + 1));
         Job(what, 0, cancellable: reencode);
-        PlayerLog.Info($"書き出す: {s.Folder} のレース {raceIndex + 1}(開始 {race.Segment.StartRecvTime:F3})→ {path}{(reencode ? $"(720p、{options!.Encode.Encoder}、{options.Encode.VideoKbps} kbps)" : "")}");
+        PlayerLog.Info($"書き出す: {s.Folder} のレース {raceIndex + 1}(開始 {race.Segment.StartRecvTime:F3})→ {path}{(reencode ? $"(720p、{options!.Encode.Encoder}、{options.Encode.VideoKbps} kbps)" : "")}"
+                       + $"{(source != null ? $"、動画 {alt!.Id}({source.Content})" : "")}{(noAudio ? "、音声なし" : "")}");
         // 進み具合は 0.5 秒に 1 回だけ画面へ(ffmpeg の知らせは細かいので)
         double lastSent = -1;
         var sw = Stopwatch.StartNew();
@@ -466,12 +485,16 @@ public partial class MainWindow : Window
         });
         try
         {
-            var r = await Task.Run(() => PackageWriter.Write(s.Folder, race.Segment.StartRecvTime, path, options, progress, cts.Token));
+            var r = await Task.Run(() => PackageWriter.Write(s.Folder, race.Segment.StartRecvTime, path, options, progress, cts.Token, source, noAudio));
             _settings.LastExportDir = Path.GetDirectoryName(path);
             _settings.Save();
             PlayerLog.Info($"書き出した: {r.Bytes / 1e6:F1} MB、動画 {r.Info.Video.CutFromSec:F2} 秒から {r.Info.Video.DurationSec:F1} 秒、テレメトリー {r.TelemetryRows} 行、{r.ElapsedSec:F1} 秒");
             Job(null);
-            Toast(message: Strings.T("書き出しました: {file}({mb:F0} MB、{sec:F0} 秒)。場所: {dir}", ("file", Path.GetFileName(path)), ("mb", r.Bytes / 1e6), ("sec", r.ElapsedSec), ("dir", Path.GetDirectoryName(path))), sec: 10);
+            var done = Strings.T("書き出しました: {file}({mb:F0} MB、{sec:F0} 秒)。場所: {dir}", ("file", Path.GetFileName(path)), ("mb", r.Bytes / 1e6), ("sec", r.ElapsedSec), ("dir", Path.GetDirectoryName(path)));
+            // 作り直さずに切り出したリプレイの頭が、キーフレームまで大きく遅れた
+            if (r.ReplayLateSec is double late && late >= PackageWriter.ReplayLateWarnSec)
+                done += " " + Strings.T("動画の頭がリプレイの先頭より {sec:F1} 秒遅れています(キーフレームの間隔のため)。「720p に縮める」で書き出すと、先頭のコマから始まります", ("sec", late));
+            Toast(message: done, sec: 12);
         }
         catch (OperationCanceledException)
         {
@@ -590,14 +613,21 @@ public partial class MainWindow : Window
     {
         if (_session == null) return;
         var s = _session;
-        var map = VideoTimeMap.Create(s.Meta.Video, _method, out var mapError);
-
-        string? videoUrl = null;
-        if (s.VideoPath != null)
+        View view;
+        try { view = CurrentView()!; }
+        catch (Exception ex)
         {
-            var host = string.Equals(Path.GetDirectoryName(s.VideoPath), s.Folder, StringComparison.OrdinalIgnoreCase) ? SessionHost : VideoHost;
-            videoUrl = $"https://{host}/{Uri.EscapeDataString(Path.GetFileName(s.VideoPath))}";
+            // 割り当てた動画で作れなければ、録画に戻す
+            PlayerLog.Error($"割り当てた動画の表示を作れない: {_activeAltId}", ex);
+            Toast(error: ex is UserFacingException ? ex.Message : Strings.T("動画を切り替えられませんでした: {message}", ("message", ex.Message)));
+            _activeAltId = null;
+            _altPath = null;
+            view = CurrentView()!;
         }
+        var map = view.Map;
+        var mapError = view.MapError;
+        var shown = view.Session;
+        string? videoUrl = VideoUrl(view.VideoPath);
 
         var v = s.Meta.Video;
         Post(new
@@ -612,7 +642,13 @@ public partial class MainWindow : Window
             startedAt = s.Meta.Session.StartedAt,
             complete = s.Meta.Complete,
             videoUrl,
-            videoError = s.VideoPath == null ? Strings.T("録画ファイルが見つかりません(テレメトリーだけ表示します)") : null,
+            // 録画と割り当てた動画(上の欄の「動画」)。割り当てられるのは記録(パッケージでなく、記録を終えたもの)だけ
+            videos = VideoList(),
+            activeVideo = view.Alt?.Id,
+            alt = AltInfo(view),
+            canAddVideo = s.Package == null && s.Meta.Complete,
+            hasRecording = s.VideoPath != null,
+            videoError = view.VideoPath == null ? Strings.T("録画ファイルが見つかりません(テレメトリーだけ表示します)") : null,
             method = _method.ToString(),
             mapError,
             sync = new
@@ -626,10 +662,10 @@ public partial class MainWindow : Window
                 clockRate = v.ClockRate,
                 fileDurationSec = v.FileDurationSec,
             },
-            rows = s.Table.RowCount,
-            fps = s.Fps,
-            series = map == null ? null : s.BuildSeries(map),
-            marks = map == null ? null : s.BuildMarks(map),
+            rows = shown.Table.RowCount,
+            fps = view.Fps,
+            series = map == null ? null : shown.BuildSeries(map),
+            marks = map == null ? null : shown.BuildMarks(map),
         });
     }
 

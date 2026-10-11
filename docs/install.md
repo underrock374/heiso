@@ -5,6 +5,8 @@ HEISO は、記録アプリ(`HeisoRecorder`)と再生アプリ(`HeisoPlayer`)の
 
 使い方は [usage.md](usage.md) にあります。
 
+English (machine-translated): [en/install.md](en/install.md)
+
 ## 1. 必要なもの
 
 | ソフト・環境 | 備考 |

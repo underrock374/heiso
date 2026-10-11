@@ -67,6 +67,75 @@ public static class VideoDuration
         }
     }
 
+    /// <summary>
+    /// 可変フレームレート(VFR)らしいか: 映像トラックのコマの間隔(stts)が一定でない。読めなければ null。
+    /// Game Bar などの録画は VFR のことがあり、1 点の定数のずれでは最後まで合わないことがある(spec: 可変フレームレートは時刻対応がずれる)。
+    /// Fragmented MP4 は調べない(null)
+    /// </summary>
+    public static bool? TryReadIsVariableFrameRate(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not (".mp4" or ".mov" or ".m4v")) return null;
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            byte[]? moov = null;
+            foreach (var (type, start, size) in Boxes(fs, 0, fs.Length))
+                if (type == "moov") moov = ReadBytes(fs, start, size);
+            if (moov == null) return null;
+            var entries = VideoSttsEntries(moov);
+            return entries.Sum(e => (long)e.Count) == 0 ? null : LooksVariable(entries);   // Fragmented は moov の stts が空
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>VFR の判定でいう「一定でない」: いちばん多い間隔から 10% を超えて違うコマが、全体の 1% を超える(最後のコマは数えない)</summary>
+    public const double VariableShare = 0.01;
+
+    /// <summary>stts の (サンプル数, 間隔) の並びから、VFR らしいか(テスト用に公開)</summary>
+    public static bool LooksVariable(IReadOnlyList<(uint Count, uint Delta)> entries)
+    {
+        var list = entries.ToList();
+        // 最後のコマは長さが半端になることが多い(OBS の録画でも)ので外す
+        if (list.Count > 1 && list[^1].Count == 1) list.RemoveAt(list.Count - 1);
+        ulong total = 0;
+        foreach (var e in list) total += e.Count;
+        if (total == 0) return false;
+        var main = list.GroupBy(e => e.Delta).OrderByDescending(g => g.Sum(e => (long)e.Count)).First().Key;
+        ulong off = 0;
+        foreach (var e in list)
+            if (Math.Abs((double)e.Delta - main) > main * 0.1) off += e.Count;
+        return off > total * VariableShare;
+    }
+
+    /// <summary>映像トラックの stts の (サンプル数, 間隔) の並び。見つからなければ空</summary>
+    private static List<(uint Count, uint Delta)> VideoSttsEntries(byte[] moov)
+    {
+        foreach (var (type, start, size) in Boxes(moov, 0, moov.Length))
+        {
+            if (type != "trak") continue;
+            var trak = moov.AsSpan((int)start, (int)size).ToArray();
+            foreach (var (t2, s2, z2) in Boxes(trak, 0, trak.Length))
+            {
+                if (t2 != "mdia") continue;
+                var mdia = trak.AsSpan((int)s2, (int)z2).ToArray();
+                bool video = false;
+                List<(uint, uint)>? entries = null;
+                foreach (var (t3, s3, z3) in Boxes(mdia, 0, mdia.Length))
+                {
+                    var b = mdia.AsSpan((int)s3, (int)z3);
+                    if (t3 == "hdlr" && b.Length >= 12) video = Encoding.ASCII.GetString(b.Slice(8, 4)) == "vide";
+                    else if (t3 == "minf") entries = SttsEntries(b.ToArray());
+                }
+                if (video) return entries ?? new();
+            }
+        }
+        return new();
+    }
+
     /// <summary>映像トラックの timescale と、stts のサンプル数・長さの合計</summary>
     private static (uint Timescale, ulong Samples, ulong Duration) VideoSampleTable(byte[] moov)
     {
@@ -97,6 +166,19 @@ public static class VideoDuration
     /// <summary>minf/stbl/stts のサンプル数と長さの合計</summary>
     private static (ulong Samples, ulong Duration) SttsTotals(byte[] minf)
     {
+        ulong samples = 0, duration = 0;
+        foreach (var (count, delta) in SttsEntries(minf))
+        {
+            samples += count;
+            duration += (ulong)count * delta;
+        }
+        return (samples, duration);
+    }
+
+    /// <summary>minf/stbl/stts の (サンプル数, 間隔) の並び</summary>
+    private static List<(uint Count, uint Delta)> SttsEntries(byte[] minf)
+    {
+        var list = new List<(uint, uint)>();
         foreach (var (t, s, z) in Boxes(minf, 0, minf.Length))
         {
             if (t != "stbl") continue;
@@ -105,20 +187,14 @@ public static class VideoDuration
             {
                 if (t2 != "stts") continue;
                 var b = stbl.AsSpan((int)s2, (int)z2);
-                if (b.Length < 8) return (0, 0);
+                if (b.Length < 8) return list;
                 uint entries = BinaryPrimitives.ReadUInt32BigEndian(b.Slice(4));
-                ulong samples = 0, duration = 0;
                 for (int i = 0; i < entries && 8 + i * 8 + 8 <= b.Length; i++)
-                {
-                    uint count = BinaryPrimitives.ReadUInt32BigEndian(b.Slice(8 + i * 8));
-                    uint delta = BinaryPrimitives.ReadUInt32BigEndian(b.Slice(12 + i * 8));
-                    samples += count;
-                    duration += (ulong)count * delta;
-                }
-                return (samples, duration);
+                    list.Add((BinaryPrimitives.ReadUInt32BigEndian(b.Slice(8 + i * 8)), BinaryPrimitives.ReadUInt32BigEndian(b.Slice(12 + i * 8))));
+                return list;
             }
         }
-        return (0, 0);
+        return list;
     }
 
     /// <summary>moof 1 個分の、映像トラックのサンプル数と長さの合計</summary>

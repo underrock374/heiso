@@ -93,6 +93,26 @@ public sealed class TelemetryTable
         return new TelemetryTable(dict, rows);
     }
 
+    /// <summary>
+    /// 行を選んだ表を作る(rows の順。全列)。recvTime を渡せば recv_time をその値に置き換える。
+    /// リプレイの仮想セッション(最終の時間軸の行を、連続した仮想の時刻に振り直したもの)に使う
+    /// </summary>
+    public TelemetryTable Subset(IReadOnlyList<int> rows, double[]? recvTime = null)
+    {
+        if (recvTime != null && recvTime.Length != rows.Count)
+            throw new ArgumentException("recvTime の長さが rows と違います", nameof(recvTime));
+        var dict = new Dictionary<string, double[]>(_columns.Count);
+        foreach (var (name, col) in _columns)
+        {
+            if (name == RecvTime && recvTime != null) { dict[name] = (double[])recvTime.Clone(); continue; }
+            var c = new double[rows.Count];
+            for (int k = 0; k < c.Length; k++) c[k] = col[rows[k]];
+            dict[name] = c;
+        }
+        if (recvTime != null && !dict.ContainsKey(RecvTime)) dict[RecvTime] = (double[])recvTime.Clone();
+        return new TelemetryTable(dict, rows.Count);
+    }
+
     private static double ParseField(ReadOnlySpan<char> s)
     {
         s = s.Trim();

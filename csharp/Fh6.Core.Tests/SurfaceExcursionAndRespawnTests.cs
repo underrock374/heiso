@@ -53,6 +53,40 @@ public class SurfaceExcursionDetectorTests
     }
 
     [Fact]
+    public void ダートのコースに入ったものは逸脱にしない()
+    {
+        // 舗装 → ダートが 7 秒(17ms × 420 行)。ダートではスリップが 1.0 を超えるのがふつう
+        var r = new Run().Repeat(40, P, P, P, P).Repeat(420, D, D, D, D, slip: 2.3).Repeat(40, P, P, P, P);
+        Assert.Empty(r.Detect());
+    }
+
+    [Fact]
+    public void ダートのコースは縁の芝を踏んでもコースのまま()
+    {
+        // 231149 の形: 3 輪以上がダートの行が多く、ときどき 1〜2 輪が芝
+        var r = new Run().Repeat(40, P, P, P, P);
+        for (int k = 0; k < 7; k++) r.Repeat(50, D, D, D, D, slip: 2.0).Repeat(10, G, D, G, D, slip: 2.0);
+        r.Repeat(40, P, P, P, P);
+        Assert.Empty(r.Detect());
+    }
+
+    [Fact]
+    public void 短くダートに出てスリップしたものは今までどおり逸脱()
+    {
+        // 2 秒だけダート(コースの長さに満たない)
+        var r = new Run().Repeat(40, P, P, P, P).Repeat(120, D, D, D, D, slip: 2.3).Repeat(40, P, P, P, P);
+        Assert.True(Assert.Single(r.Detect()).Consequential);
+    }
+
+    [Fact]
+    public void 長くても路面がばらばらならコースにしない()
+    {
+        // 7 秒、舗装から外れているが 3 輪以上が同じ路面の行は少ない(2 輪芝・2 輪ダート)
+        var r = new Run().Repeat(40, P, P, P, P).Repeat(420, G, G, D, D, slip: 2.3).Repeat(40, P, P, P, P);
+        Assert.True(Assert.Single(r.Detect()).Consequential);
+    }
+
+    [Fact]
     public void スリップを伴わなければ強調しない()
     {
         var r = new Run().Repeat(40, P, P, P, P).Repeat(20, D, P, P, P).Repeat(200, P, P, P, P);

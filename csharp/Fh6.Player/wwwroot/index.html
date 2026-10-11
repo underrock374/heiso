@@ -17,6 +17,10 @@
     <select id="race" disabled><option value="" data-i18n>全体</option></select>
   </label>
   <button id="raceNamesBtn" disabled title="選んでいるレースのコース名・車名・セッティング名を付ける(記録の保存先の登録ファイルにも登録する)" data-i18n data-i18n-title>名前を付ける</button>
+  <label title="表示する動画。録画のほかに、レースの後に録ったリプレイや、別に録った動画を割り当てられる(「動画を追加」)。切り替えても同じ瞬間を出す" data-i18n-title><span data-i18n>動画</span>
+    <select id="videoSel" disabled><option value="" data-i18n>録画</option></select>
+  </label>
+  <button id="addVideoBtn" disabled title="選んでいるレースに動画を割り当てる(録画の中のリプレイを自動で探す・別に録った動画を選ぶ)" data-i18n data-i18n-title>動画を追加</button>
   <label title="距離は 1 つのレースについて。レースが「全体」なら 1 レース目を選ぶ。リワインドでやり直した走りは出さず、最後まで残った走りを距離で並べる" data-i18n-title><span data-i18n>横軸</span>
     <select id="axis" disabled><option value="time" data-i18n>時間</option><option value="dist" data-i18n>距離</option></select>
   </label>
@@ -38,11 +42,74 @@
     <p class="muted" data-i18n>ファイルが小さくなり、人に渡しやすくなります。頭はレース開始のちょうど 5 秒前。GPU が使えれば速く終わります。</p>
     <p class="muted" id="exFfmpeg" data-i18n>ffmpeg を確かめています…</p>
   </section>
+  <section>
+    <p class="muted" id="exVideo" hidden></p>
+    <label class="check" title="BGM などの音を外した紹介用の動画にする" data-i18n-title><input type="checkbox" id="exNoAudio"> <span data-i18n>音声を入れない</span></label>
+  </section>
   <div class="dlgFoot">
     <button id="exCancel" data-i18n>キャンセル</button>
     <button id="exGo" class="cmd primary" data-i18n>保存先を選んで書き出す</button>
   </div>
 </dialog>
+
+<dialog id="addVideoDlg" class="settingsDlg namesDlg">
+  <div class="dlgHead">
+    <h2 data-i18n>動画を追加</h2>
+    <span class="muted" id="avRace"></span>
+  </div>
+  <section>
+    <div class="row"><button id="avAuto" class="cmd primary" data-i18n>録画の中のリプレイを自動で探す</button></div>
+    <p class="muted" id="avAutoNote" data-i18n>レースの後にゲームのリプレイを続けて録画していれば、その位置と、どのレースのリプレイかを見つけます(記録の中の完走したレースを全部探します。ffmpeg を使います。1 レースに数十秒かかります)。</p>
+    <div class="row"><button id="avLive" data-i18n>ライブ走行の動画を選ぶ…</button></div>
+    <p class="muted" data-i18n>同じ走りを別に録った動画(Game Bar など)。選んだ後、「同期の手動補正」で映像とグラフを合わせます。</p>
+    <div class="row"><button id="avReplay" data-i18n>リプレイの動画を選ぶ…</button></div>
+    <p class="muted" data-i18n>ゲームのリプレイだけを録った動画。選んだ後、リプレイの先頭のコマで「いまのコマ = リプレイの先頭」を押して合わせます。</p>
+  </section>
+  <div class="dlgFoot">
+    <button id="avCancel" data-i18n>やめる</button>
+  </div>
+</dialog>
+
+<dialog id="replayFoundDlg" class="settingsDlg namesDlg">
+  <div class="dlgHead">
+    <h2 data-i18n>リプレイ</h2>
+    <span class="muted" id="rfRace"></span>
+  </div>
+  <section>
+    <p class="muted" data-i18n>リプレイは、そのレースのゴールから次のレースのスタートまでの間(最後のレースは録画の終わりまで)だけを探します。</p>
+    <div id="rfList" class="rfList"></div>
+  </section>
+  <div class="dlgFoot">
+    <button id="rfCancel" data-i18n>閉じる</button>
+    <button id="rfManual" data-i18n>手動で合わせる</button>
+  </div>
+</dialog>
+
+<!-- 同期の微調整(割り当てた動画を表示している間。動画の上に浮かべ、ドラッグで動かせる) -->
+<div id="syncFloat" class="syncFloat" hidden>
+  <div class="sfHead" id="sfHead" title="ドラッグで動かせる" data-i18n-title>
+    <span data-i18n>同期の微調整</span>
+    <span class="spacer"></span>
+    <button id="sfClose" title="閉じる(右の欄「この動画」から開き直せる)" data-i18n-title>×</button>
+  </div>
+  <p class="muted" data-i18n>グラフはそのままで、映像のコマを前後に替えて合わせます。</p>
+  <div class="sfRow">
+    <span class="sfLabel" data-i18n>グラフを</span>
+    <button data-jump="brake" data-dir="-1" title="前のブレーキの踏み始めへ(グラフのカーソルと映像を移す)" data-i18n data-i18n-title>◀ ブレーキ</button>
+    <button data-jump="brake" data-dir="1" title="次のブレーキの踏み始めへ(グラフのカーソルと映像を移す)" data-i18n data-i18n-title>ブレーキ ▶</button>
+    <button data-jump="shift" data-dir="-1" title="前の変速へ" data-i18n data-i18n-title>◀ 変速</button>
+    <button data-jump="shift" data-dir="1" title="次の変速へ" data-i18n data-i18n-title>変速 ▶</button>
+  </div>
+  <div class="sfRow" id="sfNudge">
+    <span class="sfLabel" data-i18n>映像を</span>
+    <button data-nudge="-0.1" title="映像を 0.1 秒前のコマに(Shift+[)" data-i18n data-i18n-title>◀ 0.1秒</button>
+    <button data-nudge="-1f" title="映像を 1 コマ前に([)" data-i18n data-i18n-title>◀ 1コマ</button>
+    <button data-nudge="1f" title="映像を 1 コマ後に(])" data-i18n data-i18n-title>1コマ ▶</button>
+    <button data-nudge="0.1" title="映像を 0.1 秒後のコマに(Shift+])" data-i18n data-i18n-title>0.1秒 ▶</button>
+  </div>
+  <p class="muted" data-i18n>例: グラフをブレーキの踏み始めに置き、ブレーキランプが点くコマになるまで映像を送る。キー [ ] で 1 コマ、Shift+[ ] で 0.1 秒。</p>
+  <p class="sfShift" id="sfShift"></p>
+</div>
 
 <div id="jobBar" class="jobBar" hidden>
   <span id="jobText"></span>
@@ -300,6 +367,30 @@
           <tr><th data-i18n>ジャンプ / 着地</th><td id="mJumps">-</td></tr>
           <tr><th title="舗装から外れた後にスリップやリワインドにつながったもの" data-i18n data-i18n-title>路面 → スリップ</th><td id="mExcursions">-</td></tr>
         </table>
+        </details>
+        <details class="box" id="altBox" open hidden><summary data-i18n>この動画</summary>
+        <table class="sync">
+          <tr><th data-i18n>種類</th><td id="aKind">-</td></tr>
+          <tr><th data-i18n>同期</th><td id="aSync">-</td></tr>
+        </table>
+        <section class="manual">
+          <div class="row"><button id="aFloatOpen" data-i18n>同期の微調整を開く</button></div>
+          <div class="row" id="aReplayRow">
+            <button id="aZero" title="今表示しているコマを、リプレイの先頭(レースタイム 0)にする" data-i18n data-i18n-title>いまのコマ = リプレイの先頭</button>
+            <button id="aEnd" title="今表示しているコマを、ゴールの瞬間(リプレイが黒くなる直前)にし、先頭をゴールからレースタイムの分だけ前にする。先にゴール、次に先頭を押すと、間隔とレースタイムの差で検算できる" data-i18n data-i18n-title>= ゴール</button>
+          </div>
+          <p class="muted" id="aCheck" hidden></p>
+          <p class="warn" id="aWarn" hidden></p>
+          <div class="row">
+            <button id="aGoFinish" title="グラフのゴールの瞬間へ(映像のゴールと比べて、ずれを確かめる)" data-i18n data-i18n-title>ゴールの瞬間へ</button>
+            <button id="aRedetect" title="録画の中のリプレイを、もう一度自動で探す" data-i18n data-i18n-title>探し直す</button>
+          </div>
+          <div class="row">
+            <button id="aRelink" data-i18n>動画を選び直す…</button>
+            <span class="spacer"></span>
+            <button id="aRemove" title="この動画の割り当てを外す(動画のファイルは消さない)" data-i18n data-i18n-title>割り当てを外す</button>
+          </div>
+        </section>
         </details>
         <details class="box" id="manualBox"><summary data-i18n>同期の手動補正</summary>
         <section class="manual" id="manual">

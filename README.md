@@ -2,7 +2,7 @@
 
 > **English:** HEISO Solo records racing-game telemetry together with an OBS Studio recording, and plays back a run with the video and graphs side by side (currently Forza Horizon 6 on PC).
 > The apps (`HeisoRecorder` and `HeisoPlayer`) support English. They follow the Windows display language by default; to choose it yourself, use Settings → Display → Language in the Player, and `Language` in `appsettings.json` for the Recorder.
-> English manuals are in preparation. For now, the documentation below and the manuals are in Japanese.
+> English documents (machine-translated; the screenshots show the Japanese version): [README.en.md](README.en.md), [Installation](docs/en/install.md), [Usage](docs/en/usage.md).
 
 レースゲームのテレメトリーと録画を同時に記録し、1 本の走りを**動画とグラフを並べて**振り返る Windows アプリです。
 今の対応ゲームは Forza Horizon 6(PC 版)です。
@@ -29,6 +29,7 @@
 - リワインド・チェックポイント逃しのやり直しと、フォトモード・メニューの一時停止を飛ばして再生する
 - コース図は 2D と 3D(標高付き、後ろからの視点も)。路面の種類で色分けもできる
 - スロー再生とコマ送り。映像とグラフが少しずれていたら、手で合わせて保存できる
+- レースの後に録ったゲームのリプレイや、別に録った動画(Game Bar など)をレースに割り当て、切り替えて見る
 
 **画面**
 - 日本語と英語(Windows の表示言語に合わせるか、設定で選ぶ)
