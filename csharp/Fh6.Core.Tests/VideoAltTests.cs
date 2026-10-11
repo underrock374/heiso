@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Fh6.Core;
 
@@ -161,5 +162,44 @@ public sealed class VideoAltTests : IDisposable
         var live = VideoTimeMap.ForPoint(new ManualSyncPoint { RecvTime = 1790000123.5, VideoSec = 98.5 });
         Assert.Equal(98.5, live.ToVideoSec(1790000123.5), 6);
         Assert.Equal(108.5, live.ToVideoSec(1790000133.5), 6);
+    }
+
+    [Fact]
+    public void リプレイの先頭は_映像で決めた先頭に保存したずらし量を足すだけ()
+    {
+        // 新しく割り当てたとき: 設定の量(前へ 167 ms)を、ずらし量として保存する
+        var sync = new VideoAltSync { Method = VideoAltSync.MethodAutoBlackMotion, ReplayZeroVideoSec = 764.42, ShiftSec = -0.167 };
+        Assert.Equal(764.253, sync.EffectiveReplayZero, 6);
+        sync.ShiftSec += 0.033;   // 微調整で 1 コマ後ろへ
+        Assert.Equal(764.286, sync.EffectiveReplayZero, 6);
+    }
+
+    [Fact]
+    public void キーが無い古い割り当てはずらし量0で_位置は今までのまま()
+    {
+        // 2026-10-11 より前は、微調整した分が replay_zero_video_sec に入っている
+        var json = """{"basis":"race_time","method":"manual","replay_zero_video_sec":276.4015}""";
+        var legacy = JsonSerializer.Deserialize<VideoAltSync>(json, SessionMeta.JsonOptions)!;
+        Assert.Equal(0, legacy.ShiftSec);
+        Assert.Equal(276.4015, legacy.EffectiveReplayZero, 6);
+
+        legacy.ShiftSec = -0.1;
+        var node = JsonNode.Parse(JsonSerializer.Serialize(legacy, SessionMeta.JsonOptions))!;
+        Assert.Equal(-0.1, (double)node["shift_sec"]!, 6);
+        Assert.Null(node["effective_replay_zero"]);   // 計算した値は書かない
+    }
+
+    [Fact]
+    public void 書き出しにはずらし量を足した先頭を渡し_終わりは映像で決めた値のまま()
+    {
+        var alt = new VideoAlt { Kind = VideoAlt.KindReplay, Content = VideoAlt.ContentReplay };
+        alt.Sync = new VideoAltSync
+        {
+            Basis = VideoAltSync.BasisRaceTime, Method = VideoAltSync.MethodAutoBlackMotion,
+            ReplayZeroVideoSec = 764.42, ReplayEndVideoSec = 925.022, ShiftSec = -0.157,
+        };
+        var src = PackageSource.FromAlt(alt, Path.Combine(Path.GetTempPath(), "x.mp4"));
+        Assert.Equal(764.263, src.ReplayZeroVideoSec!.Value, 6);
+        Assert.Equal(925.022, src.ReplayEndVideoSec!.Value, 6);
     }
 }

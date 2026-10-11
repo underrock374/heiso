@@ -88,8 +88,18 @@ public sealed class VideoAltSync
     public string Method { get; set; } = MethodManual;
     /// <summary>自動のときの確度(high / low)。手動なら null</summary>
     public string? Confidence { get; set; }
+    /// <summary>リプレイの先頭(レースタイム 0)の動画の秒。映像で決めた値(黒の始まり・利用者が選んだコマ)で、ずらし量は含めない</summary>
     public double? ReplayZeroVideoSec { get; set; }
     public double? ReplayEndVideoSec { get; set; }
+    /// <summary>
+    /// リプレイのずらし量(秒。正なら映像を後ろへ)。「同期の微調整」の小窓に出る量そのもの。
+    /// 新しく割り当てたときは設定の「リプレイの映像をずらす量」(既定は前へ 167 ms)を入れ、微調整のボタンで足していく
+    /// </summary>
+    public double ShiftSec { get; set; }
+
+    /// <summary>再生・書き出しに使うリプレイの先頭の秒 = 映像で決めた先頭 + ずらし量(保存した量だけ。見えない所で足す量は無い)</summary>
+    [JsonIgnore]
+    public double EffectiveReplayZero => (ReplayZeroVideoSec ?? 0) + ShiftSec;
     public double? CleanDurationSec { get; set; }
     public VideoAltCheck? Check { get; set; }
     public List<ManualSyncPoint> Points { get; set; } = new();

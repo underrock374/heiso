@@ -273,6 +273,17 @@
       <option value="SyncSamples" data-i18n>録画中の対応表(比較用、約1秒ずれる)</option>
     </select>
   </section>
+  <section data-tab="sync">
+    <h3 data-i18n>リプレイを割り当てたときのずらし量</h3>
+    <div class="opt">
+      <span class="optName" data-i18n>映像を前へ</span>
+      <input id="sReplayLead" type="number" class="text num" min="-60" max="60" step="1">
+      <span data-i18n>コマ</span>
+      <button id="sReplayLeadReset" data-i18n>既定に戻す</button>
+    </div>
+    <p class="muted" id="sReplayLeadNote"></p>
+    <p class="muted" data-i18n>リプレイを自動で見つけて「採用」したときと、「いまのコマ = リプレイの先頭」「= ゴール」で合わせたときに、「同期の微調整」でこの量だけ映像を前へずらした状態にします(小窓に「映像を ○ コマ(○ ms)前へずらしました」と出ます)。コマはその動画のコマで、30fps なら 1 コマ = 33.3 ms です。割り当て済みのリプレイは変わりません。グラフのブレーキの踏み始めで、映像のブレーキランプがもう点いている(映像が先に進んで見える)なら増やし、まだ点いていない(遅れて見える)なら減らします(負の値なら映像を後ろへ)。</p>
+  </section>
 </dialog>
 
 <main>

@@ -214,3 +214,4 @@ button:disabled { opacity: 0.4; cursor: default; }
 .rfRow .rfHead { font-weight: 600; }
 .rfRow .error { color: var(--error); }
 .rfRow button { align-self: flex-end; }
+.settingsDlg input.num { flex: none; width: 90px; }

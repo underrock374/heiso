@@ -125,7 +125,7 @@ Choosing one moves to 3 seconds before its start and sets the graphs to that rac
 | **Display** (画面) | Display language (日本語 / English), units (km/h or mph, m or ft, etc.), what to show when a recording opens (all or per race, time or distance), where to put the course map and its size, whether to remember the window size |
 | **Playback** (再生) | Start playing from 3 seconds before the first race's start when a recording opens; skip redo sections and pauses automatically |
 | **Export** (書き出し) | The ffmpeg location and encoder for exporting at 720p ("8." in [install.md](install.md)) |
-| **Sync** (同期) | The method for aligning the video and graphs (for checking; normally don't change it) |
+| **Sync** (同期) | The method for aligning the video and graphs (for checking; normally don't change it), and the replay video shift |
 
 #### Graphs
 
@@ -186,6 +186,11 @@ How to install ffmpeg is in "8." of [install.md](install.md). If you only export
 The method for aligning the video and graphs. It is for checking, so **normally leave it at "Recording-start event"** (録画開始イベント).
 If the video and graphs look out of sync, don't change this; use **Manual sync** (同期の手動補正) in the right panel (see "If the video and graphs are out of sync" below).
 
+**Shift when a replay is assigned** (リプレイを割り当てたときのずらし量): when a replay is newly assigned, the video is moved earlier by this amount with **Fine sync adjustment** (frames of that video; at 30 fps, 1 frame = 33.3 ms). The default is 5 frames (167 ms at 30 fps), the amount matched on an actual replay by comparing the brake lights and gear-shift sounds with the graphs.
+When you **Use** an automatically found replay, or align one with **This frame = replay start** / **= Finish**, it starts shifted by this amount, and the Fine sync adjustment window shows "Video shifted 5 frames (167 ms) earlier". Replays already assigned don't change.
+If every replay looks off in the same direction, change this (increase it if the brake lights in the video are already on at the start of braking on the graph; decrease it if they are not on yet). **Reset to default** (既定に戻す) sets it back to 5 frames.
+Both the video and the telemetry change only once per frame (about 33 ms at 30 fps), so shifting by less than that makes almost no visible difference.
+
 ### If the video and graphs are out of sync
 
 They are normally in sync, but if they look slightly off, you can align them with **Manual sync** (同期の手動補正) in the right panel.
@@ -227,6 +232,7 @@ Switch between the recording and assigned videos with **Video** (動画) at the 
 **Fine adjustment (Fine sync adjustment)**
 
 While you watch an assigned video, a small **Fine sync adjustment** (同期の微調整) window appears over the video (you can drag it). The graph stays put; you step the video frames back or forward to match.
+When a replay is newly assigned, this window opens with the video already moved earlier by the **Shift when a replay is assigned** setting ("Video shifted 5 frames (167 ms) earlier"). The window shows the current shift of that video.
 
 1. With **Graph** (グラフを) **Brake ▶** (ブレーキ ▶), put the graph (the yellow line) at the start of braking (**Shift ▶** (変速 ▶) for the moment of a gear shift).
    In the example below, the graph is at the start of braking, but the brake lights are already on in the video. The video is slightly ahead
@@ -274,7 +280,8 @@ Choose the `.heiso.zip` with **Open package** (パッケージを開く) in the 
 
   ![Streamer Mode in the game's settings (Japanese game screen)](../images/usage/13-game-streamer-mode.png)
 
-- While driving, other players' names appear above their cars. HEISO can't remove them automatically, so if you mind, blur them with video-editing software
+- While driving, other players' names appear above their cars. HEISO can't remove them automatically, so if you mind, blur them with video-editing software.
+  **Other players' names don't appear in the game's replay.** To share, we recommend assigning the replay and exporting it (see "Watching a replay or a separately recorded video" above)
 - An easy way to share a package is to put the file on Google Drive, OneDrive or similar and share a link
 
 ## Known limitations

@@ -74,7 +74,8 @@ public partial class MainWindow
         {
             var r = ReplaySession(alt, race);
             // 動画の秒 = リプレイの先頭の秒 + レースタイム
-            var map = VideoTimeMap.FromZero(r.VirtualAtRaceTime(0) - (alt.Sync.ReplayZeroVideoSec ?? 0));
+            // 先頭の秒は、映像で決めた先頭に、保存したずらし量(「同期の微調整」の小窓に出る量)を足したもの
+            var map = VideoTimeMap.FromZero(r.VirtualAtRaceTime(0) - alt.Sync.EffectiveReplayZero);
             return new View(r, map, null, _altPath, fps, alt, race);
         }
         var live = alt.Sync.Points.Count > 0
@@ -142,6 +143,8 @@ public partial class MainWindow
             method = a.Sync.Method, confidence = a.Sync.Confidence,
             corr = a.Sync.Check?.Corr, lag = a.Sync.Check?.LagSec,
             zero = a.Sync.ReplayZeroVideoSec, end = a.Sync.ReplayEndVideoSec,
+            // リプレイの保存したずらし量(ミリ秒。正なら映像を後ろへ)。「同期の微調整」の小窓に出す
+            shiftMs = a.Content == VideoAlt.ContentReplay ? Math.Round(a.Sync.ShiftSec * 1000) : (double?)null,
             duration = v.Session.Timeline?.DurationSec ?? a.Sync.CleanDurationSec,
             points = a.Sync.Points.Count,
             vfr = a.Kind == VideoAlt.KindExternal && _altVfr == true,
@@ -481,6 +484,8 @@ public partial class MainWindow
             ReplayEndVideoSec = r?.EndVideoSec,
             CleanDurationSec = Math.Round(duration, 3),
             Check = r?.Corr is double c ? new VideoAltCheck { Corr = c, LagSec = r.LagSec ?? 0 } : null,
+            // 映像(黒の始まり)で決めた先頭から、「同期の微調整」で設定の量だけ前へずらした状態にする(小窓に出る)
+            ShiftSec = _settings.ReplayDefaultShiftSec(s.Fps),   // 録画の中のリプレイなので、録画のコマ
         };
         if (!await SetAltFileAsync(alt, s.VideoPath, s.Fps)) return;
         if (!SaveAlt(alt)) return;
@@ -524,7 +529,7 @@ public partial class MainWindow
             alt.Sync = new VideoAltSync
             {
                 Basis = VideoAltSync.BasisRaceTime, Method = VideoAltSync.MethodManual,
-                ReplayZeroVideoSec = 0, CleanDurationSec = Math.Round(tl.DurationSec, 3),
+                ReplayZeroVideoSec = 0, CleanDurationSec = Math.Round(tl.DurationSec, 3), ShiftSec = 0,
             };
         }
         else alt.Sync = new VideoAltSync { Basis = VideoAltSync.BasisRecvTime, Method = VideoAltSync.MethodManual };
@@ -628,6 +633,8 @@ public partial class MainWindow
         if (what == "end") alt.Sync.ReplayEndVideoSec = Math.Round(sec, 3);
         alt.Sync.Method = VideoAltSync.MethodManual;
         alt.Sync.Confidence = null;
+        // 映像のコマで決めたので、自動で見つけたときと同じく、設定の量だけ前へずらした状態から(小窓に出る)
+        alt.Sync.ShiftSec = _settings.ReplayDefaultShiftSec(view.Fps);
         if (!SaveAlt(alt)) return;
         PlayerLog.Info($"リプレイの位置を手で決めた: {alt.Id}、{what}、先頭 {alt.Sync.ReplayZeroVideoSec:F3} 秒");
         SendSession(keepVideo: true);
@@ -636,7 +643,7 @@ public partial class MainWindow
 
     /// <summary>
     /// 微調整: 対応を delta 秒ずらす(正なら、同じテレメトリーの瞬間に対応する動画の秒が増える。画面は映像を同じだけ送るので、グラフのカーソルの瞬間は変わらない)。
-    /// リプレイは先頭の秒、ライブは最後の同期の点の動画の秒を動かす(点が無ければ、今の仮の対応で点を作る)
+    /// リプレイは微調整(shift_sec)に足す(映像で決めた先頭・ゴールは変えない)。ライブは最後の同期の点の動画の秒を動かす(点が無ければ、今の仮の対応で点を作る)
     /// </summary>
     private void AltNudge(double delta)
     {
@@ -644,11 +651,11 @@ public partial class MainWindow
         if (view?.Alt is not VideoAlt alt || view.Map == null || Math.Abs(delta) > 5) return;
         if (view.Session.IsReplay)
         {
-            // 先頭とゴールを一緒にずらす(「先頭からゴールまで」の検算が、ずらしただけで変わらないように)
-            alt.Sync.ReplayZeroVideoSec = Math.Round((alt.Sync.ReplayZeroVideoSec ?? 0) + delta, 4);
-            if (alt.Sync.ReplayEndVideoSec is double end) alt.Sync.ReplayEndVideoSec = Math.Round(end + delta, 4);
+            alt.Sync.ShiftSec = Math.Round(alt.Sync.ShiftSec + delta, 4);
+            if (SaveAlt(alt)) SendSession(keepVideo: true);
+            return;
         }
-        else if (alt.Sync.Points.Count > 0)
+        if (alt.Sync.Points.Count > 0)
             alt.Sync.Points[^1].VideoSec = Math.Round(alt.Sync.Points[^1].VideoSec + delta, 4);
         else
             alt.Sync.Points.Add(new ManualSyncPoint
@@ -672,7 +679,12 @@ public partial class MainWindow
         double recv = view.Map.ToRecvTime(msg.GetProperty("graphSec").GetDouble());
         double videoSec = msg.GetProperty("videoSec").GetDouble();
         if (view.Session.IsReplay)
-            alt.Sync.ReplayZeroVideoSec = Math.Round(videoSec - view.Session.RaceTimeAtVirtual(recv), 3);
+        {
+            // 映像とグラフの同じ瞬間を指したので、ずれも含めてこの点で決まる(ずらし量は 0 から)
+            double rt = view.Session.RaceTimeAtVirtual(recv);
+            alt.Sync.ReplayZeroVideoSec = Math.Round(videoSec - rt, 3);
+            alt.Sync.ShiftSec = 0;
+        }
         else
             alt.Sync.Points.Add(new ManualSyncPoint
             {

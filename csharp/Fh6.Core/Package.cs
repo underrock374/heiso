@@ -129,9 +129,13 @@ public sealed record PackageSource(string VideoPath, string Content, ManualSyncP
 {
     public bool IsReplay => Content == VideoAlt.ContentReplay;
 
-    /// <summary>割り当てた動画から(foundPath は VideoAlt.Locate で見つけた動画)</summary>
+    /// <summary>
+    /// 割り当てた動画から(foundPath は VideoAlt.Locate で見つけた動画)。リプレイの先頭は、ずらし量(shift_sec)を足した値。
+    /// 終わり(黒の始まり)は映像で決めた値のまま(切り出しの終わりに使うので)
+    /// </summary>
     public static PackageSource FromAlt(VideoAlt alt, string foundPath) =>
-        new(foundPath, alt.Content, alt.Sync.Points.LastOrDefault(), alt.Sync.ReplayZeroVideoSec, alt.Sync.ReplayEndVideoSec, alt.File.Fps);
+        new(foundPath, alt.Content, alt.Sync.Points.LastOrDefault(),
+            alt.Sync.ReplayZeroVideoSec is null ? null : alt.Sync.EffectiveReplayZero, alt.Sync.ReplayEndVideoSec, alt.File.Fps);
 }
 
 /// <summary>書き出しで動画を作り直した中身(ffmpeg)</summary>

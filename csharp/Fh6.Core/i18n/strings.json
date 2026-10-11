@@ -685,8 +685,6 @@
   "映像を 0.1 秒後のコマに(Shift+])": { "en": "Show the frame 0.1 s later (Shift+])" },
   "映像を 1 コマ前に([)": { "en": "Show the previous frame ([)" },
   "映像を 1 コマ後に(])": { "en": "Show the next frame (])" },
-  "映像を {ms} ms 前へずらしました": { "en": "Video shifted {ms} ms earlier" },
-  "映像を {ms} ms 後ろへずらしました": { "en": "Video shifted {ms} ms later" },
   "閉じる(右の欄「この動画」から開き直せる)": { "en": "Close (reopen it from \"This video\" in the right panel)" },
   "BGM などの音を外した紹介用の動画にする": { "en": "Make a video without sound (e.g. without the BGM) for sharing" },
   "この動画はまだ同期を合わせていません(「同期の手動補正」で 1 点合わせてから書き出してください)": { "en": "This video is not synced yet (sync one point with \"Manual sync correction\" before exporting)" },
@@ -705,5 +703,12 @@
   "どのレースの後にも、リプレイの終わりの黒い画面が見つかりませんでした。手動で合わせることはできます。": { "en": "No black screen marking the end of a replay was found after any race. You can still match it manually." },
   "リプレイは、そのレースのゴールから次のレースのスタートまでの間(最後のレースは録画の終わりまで)だけを探します。": { "en": "A replay is searched for only between a race's finish and the start of the next race (for the last race, until the end of the recording)." },
   "リプレイを探せる完走したレースがありません": { "en": "There is no finished race to look for a replay of" },
-  "レースの後にゲームのリプレイを続けて録画していれば、その位置と、どのレースのリプレイかを見つけます(記録の中の完走したレースを全部探します。ffmpeg を使います。1 レースに数十秒かかります)。": { "en": "If you kept recording the game's replay after a race, this finds where it is and which race it belongs to (searches every finished race in the recording; uses ffmpeg; takes tens of seconds per race)." }
+  "レースの後にゲームのリプレイを続けて録画していれば、その位置と、どのレースのリプレイかを見つけます(記録の中の完走したレースを全部探します。ffmpeg を使います。1 レースに数十秒かかります)。": { "en": "If you kept recording the game's replay after a race, this finds where it is and which race it belongs to (searches every finished race in the recording; uses ffmpeg; takes tens of seconds per race)." },
+  "既定に戻す": { "en": "Reset to default" },
+  "映像を前へ": { "en": "Move video earlier by" },
+  "リプレイを割り当てたときのずらし量": { "en": "Shift when a replay is assigned" },
+  "既定は {n} コマ(30fps の動画で 167 ms。実際のリプレイで合わせた量)": { "en": "Default: {n} frames (167 ms in a 30 fps video; the amount matched on an actual replay)" },
+  "映像を {n} コマ({ms} ms)前へずらしました": { "en": "Video shifted {n} frames ({ms} ms) earlier" },
+  "映像を {n} コマ({ms} ms)後ろへずらしました": { "en": "Video shifted {n} frames ({ms} ms) later" },
+  "リプレイを自動で見つけて「採用」したときと、「いまのコマ = リプレイの先頭」「= ゴール」で合わせたときに、「同期の微調整」でこの量だけ映像を前へずらした状態にします(小窓に「映像を ○ コマ(○ ms)前へずらしました」と出ます)。コマはその動画のコマで、30fps なら 1 コマ = 33.3 ms です。割り当て済みのリプレイは変わりません。グラフのブレーキの踏み始めで、映像のブレーキランプがもう点いている(映像が先に進んで見える)なら増やし、まだ点いていない(遅れて見える)なら減らします(負の値なら映像を後ろへ)。": { "en": "When you \"Use\" an automatically found replay, or align one with \"This frame = replay start\" / \"= Finish\", the video starts moved earlier by this amount with \"Fine sync adjustment\" (the window shows \"Video shifted ○ frames (○ ms) earlier\"). Frames are frames of that video; at 30 fps, 1 frame = 33.3 ms. Replays already assigned don't change. If the brake lights in the video are already on at the start of braking on the graph (the video looks ahead), increase it; if they are not on yet (the video looks behind), decrease it (a negative value moves the video later)." }
 }

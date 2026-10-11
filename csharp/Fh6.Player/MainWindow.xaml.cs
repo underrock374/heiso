@@ -157,7 +157,11 @@ public partial class MainWindow : Window
                 break;
             case "ready":
                 // 画面の設定のダイアログに、C# 側で持っている設定を渡す
-                Post(new { type = "prefs", rememberWindow = _settings.RememberWindow, language = _settings.Language ?? Strings.Auto });
+                Post(new
+                {
+                    type = "prefs", rememberWindow = _settings.RememberWindow, language = _settings.Language ?? Strings.Auto,
+                    replayLeadFrames = _settings.ReplayLeadFrames ?? PlayerSettings.DefaultReplayLeadFrames, replayLeadDefault = PlayerSettings.DefaultReplayLeadFrames,
+                });
                 // 画面の設定(どの記録にも共通)の同期の方式を使う
                 if (msg.TryGetProperty("method", out var rm) && Enum.TryParse<VideoSyncMethod>(rm.GetString(), out var readyMethod))
                     _method = readyMethod;
@@ -216,6 +220,16 @@ public partial class MainWindow : Window
             case "setExportEncoder":
                 _settings.ExportEncoder = msg.TryGetProperty("encoder", out var ee) ? ee.GetString() : null;
                 _settings.Save();
+                break;
+            case "setReplayLead":
+                // リプレイを割り当てたときのずらし量(設定の「同期」。コマ)。既定と同じなら空にして、既定が変わったら追う
+                if (msg.TryGetProperty("frames", out var rl) && rl.ValueKind == JsonValueKind.Number)
+                {
+                    int frames = Math.Clamp((int)Math.Round(rl.GetDouble()), -60, 60);
+                    _settings.ReplayLeadFrames = frames == PlayerSettings.DefaultReplayLeadFrames ? null : frames;
+                    _settings.Save();
+                    PlayerLog.Info($"リプレイを新しく割り当てたときのずらし量: 前へ {frames} コマ");   // 割り当て済みのリプレイは変えない
+                }
                 break;
             case "rememberWindow":
                 _settings.RememberWindow = msg.TryGetProperty("on", out var on) && on.GetBoolean();

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Fh6.Player;
 
@@ -32,6 +33,23 @@ public sealed class PlayerSettings
 
     /// <summary>画面の言語: "auto"(Windows の表示言語が日本語なら日本語、それ以外は英語)/ "ja" / "en"。空なら auto</summary>
     public string? Language { get; set; }
+
+    /// <summary>
+    /// リプレイの映像を前へずらす量の既定(コマ)。164031 のリプレイ(30fps)で、ブレーキランプ・変速の音とグラフを見比べて合わせた量
+    /// (167 ms = 30fps の 5 コマ。2026-10-11)。60fps の動画で同じ時間かは確かめていない
+    /// </summary>
+    public const int DefaultReplayLeadFrames = 5;
+
+    /// <summary>
+    /// リプレイを新しく割り当てたときに、「同期の微調整」で前へずらしておく量(その動画のコマ。負なら後ろへ)。空なら DefaultReplayLeadFrames。
+    /// 自動で見つけて「採用」したときと、「いまのコマ = リプレイの先頭」「= ゴール」で決めたときに、その動画のずらし量(session.json の video_alt の shift_sec)に入れる。
+    /// 割り当て済みのリプレイは変えない
+    /// </summary>
+    public int? ReplayLeadFrames { get; set; }
+
+    /// <summary>新しく割り当てたリプレイのずらし量(秒。前へずらすので負)。fps はその動画のフレームレート(分からなければ 30)</summary>
+    public double ReplayDefaultShiftSec(double? fps) =>
+        Math.Round(-(ReplayLeadFrames ?? DefaultReplayLeadFrames) / (fps is double f && f > 0 ? f : 30), 4);
 
     /// <summary>ウィンドウの大きさと位置を覚えるか(画面の設定のダイアログで切り替える)</summary>
     public bool RememberWindow { get; set; }

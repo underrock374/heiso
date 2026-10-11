@@ -105,6 +105,9 @@ host.addEventListener("message", (e) => {
   else if (m.type === "prefs") {
     rememberWindow = !!m.rememberWindow;
     for (const r of document.querySelectorAll("input[name=sLang]")) r.checked = r.value === (m.language || "auto");
+    replayLeadDefault = m.replayLeadDefault ?? 5;
+    if (document.activeElement !== $("sReplayLead")) $("sReplayLead").value = m.replayLeadFrames ?? replayLeadDefault;
+    $("sReplayLeadNote").textContent = t("既定は {n} コマ(30fps の動画で 167 ms。実際のリプレイで合わせた量)", { n: replayLeadDefault });
   }
   else if (m.type === "restore") onRestore(m);
   else if (m.type === "crashNotice") onCrashNotice(m);
@@ -576,11 +579,13 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     frameStep(e.code === "Period" ? 1 : -1);
   }
-  // [ / ]: 割り当てた動画の同期の微調整(映像を 1 コマ前・後のコマに。Shift で 0.1 秒。グラフのカーソルの瞬間はそのまま)
-  if ((e.code === "BracketLeft" || e.code === "BracketRight") && altInfo && !typingTarget(e) && !e.ctrlKey && !e.altKey) {
+  // [ / ]: 割り当てた動画の同期の微調整(映像を 1 コマ前・後のコマに。Shift で 0.1 秒。グラフのカーソルの瞬間はそのまま)。
+  // キーの位置(e.code)ではなく入力される文字(e.key)で見る(日本語キーボードでは、英語の [ ] の位置に @ [ がある)。
+  // Shift を押すと文字が { } になる
+  const bracket = { "[": -1, "{": -1, "]": 1, "}": 1 }[e.key];
+  if (bracket && altInfo && !typingTarget(e) && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
-    const dir = e.code === "BracketRight" ? 1 : -1;
-    nudgeBy(e.shiftKey ? String(dir * 0.1) : `${dir}f`);
+    nudgeBy(e.shiftKey ? String(bracket * 0.1) : `${bracket}f`);
   }
   // Ctrl+← / →: 10 秒、Ctrl+Alt+← / →: 30 秒
   if (e.ctrlKey && (e.code === "ArrowLeft" || e.code === "ArrowRight") && !typingTarget(e)) {
@@ -1303,9 +1308,12 @@ function showNudge() {
   const wasHidden = box.hidden;
   box.hidden = !open;
   if (open && wasHidden) placeFloat();
-  $("sfShift").textContent = nudge.total
-    ? (nudge.total > 0 ? t("映像を {ms} ms 後ろへずらしました", { ms: Math.round(nudge.total * 1000) }) : t("映像を {ms} ms 前へずらしました", { ms: Math.round(-nudge.total * 1000) }))
-    : "";
+  // リプレイは保存したずらし量(新しく割り当てたときの設定の量を含む)、ライブはこの動画を表示している間にずらした量
+  const ms = altInfo && altInfo.shiftMs != null ? Math.round(altInfo.shiftMs) : Math.round(nudge.total * 1000);
+  // コマの数も出す(その動画のフレームレートで。小数は 1 桁まで)
+  const f = Math.round(Math.abs(ms) * (fps || 1 / frameSec) / 100) / 10;
+  $("sfShift").textContent = ms > 0 ? t("映像を {n} コマ({ms} ms)後ろへずらしました", { n: f, ms })
+    : ms < 0 ? t("映像を {n} コマ({ms} ms)前へずらしました", { n: f, ms: -ms }) : "";
 }
 
 /** 小窓の位置: 覚えていればそこ、無ければ動画の左下。画面の外に出ないように */
@@ -1438,6 +1446,9 @@ function onReplayFound(m) {
       b.textContent = t("採用");
       b.onclick = () => {
         $("replayFoundDlg").close();
+        // 割り当てた後、「同期の微調整」の小窓を出す(設定の量だけ前へずらした状態を見せる)
+        floatState.closed = false;
+        saveFloat();
         host.postMessage({ type: "adoptReplay", manual: false, sec: currentSec(), race: r.race });
       };
       row.append(b);
@@ -1490,6 +1501,19 @@ $("aRemove").onclick = () => {
   if (altInfo && confirm(t("この動画の割り当てを外しますか?(動画のファイルは消しません)")))
     host.postMessage({ type: "removeVideo", id: altInfo.id, sec: currentSec(), race: selectedRaceIndex() });
 };
+
+// ---- リプレイを割り当てたときのずらし量(設定の「同期」。コマ。C# の player.json に保存し、新しく割り当てるときに使う) ----
+
+let replayLeadDefault = 5;
+function setReplayLead(frames) {
+  if (!Number.isFinite(frames)) return;
+  frames = Math.max(-60, Math.min(60, Math.round(frames)));
+  $("sReplayLead").value = frames;
+  logEvent(`リプレイを割り当てたときのずらし量: 前へ ${frames} コマ`);
+  host.postMessage({ type: "setReplayLead", frames });
+}
+$("sReplayLead").onchange = () => setReplayLead(Number($("sReplayLead").value));
+$("sReplayLeadReset").onclick = () => setReplayLead(replayLeadDefault);
 
 // ---- 同期の手動補正 ----
 // 映像のコマの秒(このコマを使う)と、グラフで指した瞬間(今の変換での動画の秒)を C# に送り、
