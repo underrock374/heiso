@@ -164,6 +164,17 @@ button:disabled { opacity: 0.4; cursor: default; }
 .mapLegend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 3px 0 8px; vertical-align: -1px; }
 .mapZoom button { flex: 1; padding: 2px 0; font-size: 12px; }
 .map { width: 100%; height: 220px; display: block; border: 1px solid var(--line); border-radius: 4px; cursor: crosshair; }
+.gg { width: 100%; height: 220px; display: block; border: 1px solid var(--line); border-radius: 4px; }
+.mapDock .gg { width: 100%; }
+/* 性能モード: 上の帯の切り替えと、性能モードだけの部品(パワーカーブ・読み取り値の行) */
+.seg { display: inline-flex; flex: none; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 4px 0 0 4px; }
+.seg button:last-child { border-radius: 0 4px 4px 0; margin-left: -1px; }
+body:not(.perf) .perfOnly { display: none; }
+.pwBox { margin: 6px 0; }
+.pwHead { font-size: 12px; margin-bottom: 2px; }
+.pw { width: 100%; height: 140px; display: block; border: 1px solid var(--line); border-radius: 4px; }
 .manual { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .manual:empty { display: none; }
 .manual .caption { color: var(--muted); margin-bottom: 4px; }

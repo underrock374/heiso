@@ -16,13 +16,14 @@ public sealed class LoadedSession
         {
             TelemetryTable.RecvTime, "timestamp_ms", "is_race_on", "speed", "accel", "brake", "steer", "gear",
             "race_pos", "position_x", "position_y", "position_z", "acceleration_x", "acceleration_z", "angular_velocity_y",
-            "lap_no", "cur_lap", "dist_traveled", "yaw",
+            "lap_no", "cur_lap", "dist_traveled", "yaw", "current_engine_rpm", "power",
         }
         .Concat(Wheels.Select(w => "norm_suspension_travel_" + w))
         .Concat(Wheels.Select(w => "tire_combined_slip_" + w))
         .Concat(Wheels.Select(w => "surface_rumble_" + w))
         .Concat(Wheels.Select(w => "wheel_on_rumble_strip_" + w))
         .Concat(Wheels.Select(w => "wheel_in_puddle_" + w))
+        .Concat(Wheels.Select(w => "tire_slip_ratio_" + w))   // ギア比(ホイールスピンの行を除く)
         .Union(RaceSample.Columns)
         .Union(RaceTimeline.Columns)
         .Union(ReplayDetector.Columns)   // リプレイの自動判別の検算(角速度)
@@ -81,6 +82,15 @@ public sealed class LoadedSession
 
     /// <summary>路面の逸脱(舗装から外れた瞬間)と、それに続くスリップ</summary>
     public required List<SurfaceExcursion> Excursions { get; init; }
+
+    /// <summary>車ごとの性能(パワーカーブ・ギア比・最適な変速回転数)と、その車の行</summary>
+    public required List<(PowerProfile Profile, List<int> Rows)> Power { get; init; }
+
+    /// <summary>全開のシフトアップ(性能モードの変速の点)</summary>
+    public required List<ShiftEvent> Shifts { get; init; }
+
+    /// <summary>行ごとに、リミッターに張り付いているか(変速の得失を「早い」にしない)</summary>
+    public required bool[] LimiterBounce { get; init; }
 
     public required double[] Grade { get; init; }
     public required double[] Turn { get; init; }
@@ -170,6 +180,19 @@ public sealed class LoadedSession
             (t["tire_combined_slip_fl"][i] + t["tire_combined_slip_fr"][i]) / 2,
             (t["tire_combined_slip_rl"][i] + t["tire_combined_slip_rr"][i]) / 2)).ToArray();
 
+        // 性能モード: 車ごとのパワーカーブとギア比、全開のシフトアップ(is_race_on の行を時刻の順に)
+        var raceRows = Enumerable.Range(0, t.RowCount).Where(i => on[i] == 1 && double.IsFinite(ts[i])).OrderBy(i => ts[i]).ToList();
+        var power = PowerAnalysis.Profiles(raceRows, i => ((int)t["car_ordinal"][i], (int)t["car_pi"][i]), ts,
+            t["current_engine_rpm"], t["power"], t["accel"], t["gear"], t["speed"], Wheels.Select(w => t["tire_slip_ratio_" + w]).ToArray());
+        var profileOf = new Dictionary<int, PowerProfile>();
+        foreach (var (p, rows) in power) foreach (int i in rows) profileOf[i] = p;
+        var shifts = PowerAnalysis.Upshifts(raceRows, ts, t["gear"], t["current_engine_rpm"], t["accel"], t["power"],
+            (i, g, rpm) => profileOf.TryGetValue(i, out var p) ? p.Gain(g, rpm) : null);
+        // リミッターに張り付いている行と、変速の前に張り付いていた時間
+        var bounce = PowerAnalysis.LimiterBounce(raceRows, t.RowCount, ts, t["gear"], t["current_engine_rpm"], t["accel"], t["power"],
+            i => profileOf.TryGetValue(i, out var p) ? p.LimiterRpm : null);
+        shifts = shifts.Select(s => s with { LimiterMs = PowerAnalysis.TimeAtLimiterMs(raceRows, s.Index, ts, t["gear"], bounce) }).ToList();
+
         var starts = StartDetector.Detect(ts, on, t["speed"], t["race_pos"], t["position_x"], t["position_z"], t["dist_traveled"]);
         // リプレイは先頭の行(レースタイム 0)がスタート。前に停止区間が無いので、止まっていた時間が短いと見つからない
         // (リプレイを書き出したパッケージも同じ。テレメトリーは最終の時間軸だけ)
@@ -188,6 +211,7 @@ public sealed class LoadedSession
             Extended = extended,
             Excursions = SurfaceExcursionDetector.Detect(ts, on, t["speed"], extended,
                 Wheels.Select(w => t["surface_rumble_" + w]).ToArray(), Wheels.Select(w => t["wheel_on_rumble_strip_" + w]).ToArray(), slip),
+            Power = power, Shifts = shifts, LimiterBounce = bounce,
             Grade = DerivedSeries.Grade(segment, distance, t["position_y"]),
             Turn = DerivedSeries.TurnCurvature(on, t["angular_velocity_y"], t["speed"]),
         };
@@ -261,9 +285,54 @@ public sealed class LoadedSession
             x = Col(i => C("position_x")[i], 1, 1),
             z = Col(i => C("position_z")[i], 1, 1),
             turn = Col(i => Turn[i], 1, 2),
+            // 車体座標の加速度を G にしたもの(摩擦円と、グラフの「前後G」「横G」)。FH6 のデータ出力は x = 右、z = 前(Forza 共通の約束)。
+            // 前後は + = 加速、横は + = 右。軸の向きは実機のデータで確かめること(docs/telemetry-field-notes.md「加速度の軸」)
+            gLong = Col(i => C("acceleration_z")[i], 1 / 9.80665, 2),
+            gLat = Col(i => C("acceleration_x")[i], 1 / 9.80665, 2),
+            // 性能モード(docs/spec.md「性能モード」): 回転数、今のギアの最適な変速回転数、今すぐ変速した場合の得失(全開の行だけ。%)、
+            // 車の番号(perf.cars の位置。性能を出せない行は null)
+            rpm = Col(i => C("current_engine_rpm")[i], 1, 0),
+            // 最適な範囲(得失が ±3% 以内)の下と上。出力が平らな車では広く、リミッターまで引っ張る方が得なギアではリミッターの手前
+            optRpm = Col(i => RangeAt(i) is { } x ? x.Lo : double.NaN, 1, 0),
+            optRpmHi = Col(i => RangeAt(i) is { } x ? x.Hi : double.NaN, 1, 0),
+            // リミッターに張り付いている間は、回転数がリミッターの下まで上下しても「早い」にしない(負を 0 に)
+            gain = Col(i => C("accel")[i] >= PowerAnalysis.FullThrottle && C("gear")[i] != 11 && ProfileAt(i)?.Gain((int)C("gear")[i], C("current_engine_rpm")[i]) is double g
+                ? (LimiterBounce[i] && g < 0 ? 0 : g) : double.NaN, 1, 1),
+            perfCar = idx.Select(i => on[i] == 1 && _carOfRow.TryGetValue(i, out var k) ? k : (int?)null).ToArray(),
+            perf = new
+            {
+                cars = Power.Select(x => new
+                {
+                    ordinal = x.Profile.Ordinal, pi = x.Profile.Pi,
+                    curve = x.Profile.Curve == null ? null : x.Profile.Curve.Rpm.Select((r, k) => new[] { r, x.Profile.Curve.Hp[k] }).ToArray(),
+                    maxHp = x.Profile.Curve?.MaxHp,
+                    limiter = x.Profile.LimiterRpm,
+                    // この記録で使ったギア(全開でなくても)。次のギアの比が無いとき、「上のギアを使っていない」か「行が足りない」かを分ける
+                    gears = x.Rows.Select(i => C("gear")[i]).Where(g => g >= 1 && g <= 10).Distinct().OrderBy(g => g).Select(g => (int)g).ToArray(),
+                    range = (x.Profile.OptimalRange ?? new Dictionary<int, (double Lo, double Hi)>()).ToDictionary(kv => kv.Key.ToString(), kv => new[] { kv.Value.Lo, kv.Value.Hi }),
+                    ratios = x.Profile.Ratios.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+                    opt = x.Profile.OptimalRpm.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+                }).ToArray(),
+            },
             surface = new { fl = Surface("fl"), fr = Surface("fr"), rl = Surface("rl"), rr = Surface("rr") },
         };
     }
+
+    private Dictionary<int, int>? _carOfRowCache;
+    /// <summary>行番号 → Power の位置</summary>
+    private Dictionary<int, int> _carOfRow => _carOfRowCache ??= Power.SelectMany((x, k) => x.Rows.Select(i => (i, k))).ToDictionary(x => x.i, x => x.k);
+    /// <summary>レースの全開のシフトアップが、自動変速らしいか(PowerAnalysis.LooksAutomatic)</summary>
+    private (bool Auto, double Lo, double Hi)? AutoOf(RaceSegment seg) =>
+        PowerAnalysis.LooksAutomatic(Shifts.Where(s => s.Index >= seg.StartIndex && s.Index <= seg.EndIndex).ToList());
+
+    /// <summary>行 i の、今のギアの最適な範囲(無ければ null)</summary>
+    private (double Lo, double Hi)? RangeAt(int i)
+    {
+        double g = Table["gear"][i];
+        return g != 11 && ProfileAt(i)?.OptimalRange is { } r && r.TryGetValue((int)g, out var x) ? x : null;
+    }
+
+    private PowerProfile? ProfileAt(int i) => _carOfRow.TryGetValue(i, out var k) ? Power[k].Profile : null;
 
     /// <summary>スタート・接触・着地・ジャンプ。時刻 t は動画の秒</summary>
     public object BuildMarks(VideoTimeMap map)
@@ -295,6 +364,9 @@ public sealed class LoadedSession
                 t0 = T(r.Segment.StartIndex), t1 = T(r.Segment.EndIndex), tf = T(r.Segment.FinishIndex), restart = r.Segment.Restart,
                 finished = r.Segment.LikelyFinished, finishedBy = r.Segment.FinishedBy, endKmh = r.Segment.EndSpeedKmh, course = r.Course, car = r.Car, setup = r.Setup,
                 dist = RaceDistanceSeries(r.Segment, pos),
+                // 自動変速(か AutoDrive)らしいか: true / false / null(分からない)と、変速回転数の 10〜90 パーセンタイル
+                auto = AutoOf(r.Segment) is { } a ? a.Auto : (bool?)null,
+                autoLo = AutoOf(r.Segment)?.Lo, autoHi = AutoOf(r.Segment)?.Hi,
             }).ToArray(),
             // 再生時に飛ばせる区間。kind = "redo": やり直し区間(リワインド・チェックポイント逃しで捨てた走りの始まりから、戻った先で走り直すまで)、
             // "pause": 一時停止(フォトモード・ポーズメニュー。経過時間が止まった停止区間)
@@ -304,6 +376,13 @@ public sealed class LoadedSession
                 t0 = Math.Round(map.ToVideoSec(g.FromRecvTime), 3), t1 = Math.Round(map.ToVideoSec(g.ToRecvTime), 3), kind = g.Kind,
             }).ToArray(),
             laps = Laps.Select(l => new { t = T(l.Index), lap = l.Lap, prev = l.PrevLapSec, finish = l.IsFinish, byPosition = !l.FromLapCounter }).ToArray(),
+            // 全開のシフトアップ。verdict: early / ok / late(得失を出せなければ null)
+            shifts = Shifts.Select(s => new
+            {
+                t = T(s.Index), from = s.FromGear, rpm = s.Rpm, gain = s.GainPct, verdict = s.Verdict?.ToString().ToLowerInvariant(),
+                limiterSec = Math.Round(s.LimiterMs / 1000, 1),
+                auto = Races.Any(r => s.Index >= r.Segment.StartIndex && s.Index <= r.Segment.EndIndex && AutoOf(r.Segment) is { Auto: true }),
+            }).ToArray(),
             jumps = Jumps.Select(j => new
             {
                 t0 = T(j.StartIndex), t1 = T(j.EndIndex), sec = j.DurationSec, kmh = j.TakeoffKmh, drop = j.DropM,

@@ -240,6 +240,19 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 - クリックでその場所を通った時刻へ(何度も通っていれば今の時刻に一番近いもの。やり直し区間は除く)
 - WebGL2 が使えない PC では 2D のままにして知らせる
 
+### 摩擦円
+
+コース図の場所を「摩擦円」に切り替えられる(`wwwroot/frictioncircle.js`)。横 G(右が正)と前後 G(上が加速)を点で出し、路面ごとの円(その走りの合成 G の上位 2%)を重ねる。軌跡の長さと点群の有無は下のボタンで変える。計算は `tools/dev/frictioncircle.test.mjs`(node で実行。CI では回さない)で確かめられる。仕様は `docs/spec.md`「摩擦円」。
+
+### 性能モード
+
+上の帯の「見える化 / 性能」(`settings.viewMode`)で切り替える。グラフの段の組み合わせ(`graphs.js` の `PERF_PRESETS`、保存は `heiso.graphLayout.perf.v1`)と、コース図の場所に出すもの(`settings.mapModePerf`)は、見える化とは別に覚える。
+性能モードだけの部品は `.perfOnly`(`body.perf` のときだけ出す)。
+
+- 計算は C# の `Fh6.Core/PowerAnalysis.cs`(パワーカーブ・ギア比・リミッター・最適な変速回転数と最適な範囲・変速の得失・全開のシフトアップ・自動変速の見分け。単体テストあり)。車は車種と PI の組で分ける
+- `LoadedSession.BuildSeries` が `rpm`・`optRpm`・`optRpmHi`(今のギアの最適な範囲の下と上)・`gain`(今すぐ変速した場合の得失 %。全開の行だけ)・`perfCar`(行ごとの車の番号)・`perf.cars`(車ごとのカーブ・ギア比・最適な変速回転数・最適な範囲・リミッター)を、`BuildMarks` が `shifts`(全開のシフトアップと判定)を渡す
+- パワーカーブの図は `wwwroot/powercurve.js`(右の欄の摩擦円の下)。仕様は `docs/spec.md`「性能モード」
+
 ### 区切って追従する(「区切り」)
 
 範囲を 2km / 1km / 500m / 200m にしているとき、いつも今の位置に合わせて動かすのではなく、コースを区間に分けて、区間の中では視点(中心と向き)を動かさない。

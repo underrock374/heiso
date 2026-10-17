@@ -29,6 +29,8 @@ It currently supports Forza Horizon 6 (PC).
 - Course map in 2D and 3D (with elevation, including a chase view). Can be colored by road surface
 - Slow motion and frame stepping. If the video and graphs are slightly off, you can align them by hand and save it
 - Assign the game's replay recorded after a race, or a separately recorded video (Game Bar, etc.), to a race, and switch between them
+- Performance mode (0.3.0+): RPM and how good each shift was (early / on time / late), the power curve and the friction circle, to see whether you are using the engine and tires fully
+- Friction circle (0.3.0+): the force the tires are putting out (lateral and longitudinal G) as a single dot. It changes color when slip is over the limit
 
 **Display**
 - Japanese and English (follows the Windows display language, or choose in Settings)

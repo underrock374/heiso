@@ -24,6 +24,10 @@
   <label title="距離は 1 つのレースについて。レースが「全体」なら 1 レース目を選ぶ。リワインドでやり直した走りは出さず、最後まで残った走りを距離で並べる" data-i18n-title><span data-i18n>横軸</span>
     <select id="axis" disabled><option value="time" data-i18n>時間</option><option value="dist" data-i18n>距離</option></select>
   </label>
+  <span class="seg" id="viewModes">
+    <button data-viewmode="vis" title="速度・ペダル・操舵・スリップなど、走りを見るグラフとコース図(0.2.1 までの表示)" data-i18n data-i18n-title>見える化</button>
+    <button data-viewmode="perf" title="回転数と変速の得失、グリップの使い方を見るグラフと、摩擦円・パワーカーブ。エンジンとタイヤを使い切れているかを見る" data-i18n data-i18n-title>性能</button>
+  </span>
   <button id="skipNow" class="toggle" title="押すたびに ON / OFF。ON なら再生中、やり直し区間(リワインド・チェックポイント逃し)とフォトモード・メニューの一時停止(グラフの灰色の帯)に入ったら飛ばす。この記録を開いている間だけ(開いたときは設定の値)" data-i18n data-i18n-title>スキップ OFF</button>
   <span class="spacer"></span>
   <button id="exportBtn" class="cmd primary" disabled title="選んでいるレースを、配布パッケージ(.heiso.zip。動画・テレメトリー・情報を 1 つにまとめたもの)に書き出す。動画はレースの 5 秒前から 5 秒後まで" data-i18n data-i18n-title>書き出す</button>
@@ -342,9 +346,11 @@
           <div class="row mapModes">
             <button data-mapmode="2d" title="真上から見た図(北が上)" data-i18n-title>2D</button>
             <button data-mapmode="3d" title="標高を高さにした立体の図" data-i18n-title>3D</button>
+            <button data-mapmode="gg" title="前後の加速度(縦)と横の加速度(横)を 1 つの点で見る図(摩擦円)。コース図と同じ場所に出る" data-i18n data-i18n-title>摩擦円</button>
             <button id="mapSurface" title="4 輪の路面が同じ所はその路面の色、違う所は紫で塗る" data-i18n data-i18n-title>路面の色</button>
             <button id="mapStep" title="拡大中、今の位置にいつも合わせるのではなく、直線の真ん中で区切った区間ごとに視点を決め、区間が変わったら移る(コーナーの途中やスピンで視点が動かない)" data-i18n data-i18n-title>区切り</button>
           </div>
+          <canvas id="gg" class="gg" hidden title="摩擦円。横軸 = 横 G(右が正)、縦軸 = 前後 G(上 = 加速、下 = ブレーキ)。点は車が押されている向き(体が振られる向きの反対。右コーナーで右、ブレーキで下)。円は、選んでいるレースでその路面に出た加速度の上位 2% の大きさ(車の限界そのものではない)。点がオレンジのときは、スリップが限界(1)を超えている。円の外へ大きく飛ぶのは、壁・着地などタイヤ以外の力" data-i18n-title></canvas>
           <div class="row mapModes" id="map3dCtl" hidden>
             <button data-view="top" title="真上から(北が上)" data-i18n data-i18n-title>真上</button>
             <button data-view="tilt" title="斜め上から" data-i18n data-i18n-title>斜め</button>
@@ -353,19 +359,34 @@
               <option value="auto" data-i18n>高さ 自動</option><option value="1" data-i18n>高さ ×1</option><option value="3" data-i18n>高さ ×3</option><option value="5" data-i18n>高さ ×5</option>
             </select>
           </div>
+          <div class="row mapModes" id="ggCtl" hidden>
+            <span class="muted" data-i18n>軌跡</span>
+            <select id="ggTrail" title="今の点の後ろに、直近の何秒かの動きを残す" data-i18n-title>
+              <option value="0" data-i18n>なし</option><option value="1" data-i18n>1秒</option><option value="3" data-i18n>3秒</option>
+              <option value="5" data-i18n>5秒</option><option value="10" data-i18n>10秒</option>
+            </select>
+            <button id="ggCloud" title="選んでいるレースで出た加速度の全部を、薄い点で重ねる(円の大きさの目安)" data-i18n data-i18n-title>点群</button>
+          </div>
           <div id="mapLegend" class="mapLegend" hidden></div>
           <div class="row mapZoom" id="mapZoom" title="コース図の範囲。全体以外は今の位置を真ん中にして追従する(一辺の長さ)" data-i18n-title>
             <button data-zoom="0" data-i18n>全体</button>
           </div>
         </div>
+        <div id="pwBox" class="pwBox perfOnly">
+          <div class="pwHead"><span data-i18n>パワーカーブ</span> <span class="muted" id="pwNote"></span></div>
+          <canvas id="pw" class="pw" title="この車の全開の出力(回転数ごとの上位 25% の値。変速の後 1 秒は除く)。● = 今(灰色の輪は全開でない)、○ = 今すぐ次のギアへ変速した場合、薄い帯と縦の破線 = 今のギアの最適な範囲(変速の得失が ±3% 以内)、赤の点線 = リミッター" data-i18n-title></canvas>
+        </div>
         <table class="readout">
           <tr><th data-i18n>動画の位置</th><td id="rTime">-</td></tr>
           <tr><th data-i18n>速度</th><td id="rSpeed">-</td></tr>
           <tr><th data-i18n>ギア</th><td id="rGear">-</td></tr>
+          <tr class="perfOnly"><th data-i18n>回転数 / 出力</th><td id="rRpm">-</td></tr>
+          <tr class="perfOnly"><th title="今すぐ次のギアへ変速した場合の出力の差(最大出力に対する %)。正 = 変速した方が出力が高い(変速が遅れている)、負 = まだ早い。±3% 以内を適正とする。全開の間だけ" data-i18n data-i18n-title>変速の得失</th><td id="rShift">-</td></tr>
           <tr><th data-i18n>アクセル / ブレーキ</th><td id="rPedal">-</td></tr>
           <tr><th data-i18n>操舵</th><td id="rSteer">-</td></tr>
           <tr><th data-i18n>旋回</th><td id="rTurn">-</td></tr>
           <tr><th data-i18n>スリップ 前 / 後</th><td id="rSlip">-</td></tr>
+          <tr><th title="車体座標の加速度。前後は + = 加速、横は + = 右" data-i18n data-i18n-title>G 前後 / 横</th><td id="rG">-</td></tr>
           <tr><th data-i18n>路面</th><td id="rSurface">-</td></tr>
           <tr><th data-i18n>勾配 / 標高</th><td id="rGrade">-</td></tr>
         </table>
@@ -376,6 +397,7 @@
           <tr><th title="リワインド・チェックポイント逃しでやり直した走りと、フォトモード・メニューの一時停止(グラフの灰色の帯)。スキップで飛ばす" data-i18n data-i18n-title>飛ばせる区間</th><td id="mSkips">-</td></tr>
           <tr><th data-i18n>接触の候補</th><td id="mContacts">-</td></tr>
           <tr><th data-i18n>ジャンプ / 着地</th><td id="mJumps">-</td></tr>
+          <tr class="perfOnly"><th title="全開のシフトアップの数と、早い・適正・遅いの内訳(選んでいるレースの中。全体なら記録全体)。変速回転数がギアによらずそろうレースは、ゲームの自動変速(か AutoDrive)らしいので、そう添えて、点を中抜きの輪にする(運転の良し悪しではなく参考)" data-i18n data-i18n-title>変速(全開)</th><td id="mShifts">-</td></tr>
           <tr><th title="舗装から外れた後にスリップやリワインドにつながったもの" data-i18n data-i18n-title>路面 → スリップ</th><td id="mExcursions">-</td></tr>
         </table>
         </details>
@@ -445,6 +467,8 @@
 <script src="units.js"></script>
 <script src="graphs.js"></script>
 <script src="coursemap.js"></script>
+<script src="frictioncircle.js"></script>
+<script src="powercurve.js"></script>
 <script src="courseview3d.js"></script>
 <script src="app.js"></script>
 </body>

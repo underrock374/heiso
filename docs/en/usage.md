@@ -115,6 +115,96 @@ Choosing one moves to 3 seconds before its start and sets the graphs to that rac
 
 ![Course map in 2D and 3D, zooming, and switching views](../images/usage/demo-coursemap.gif)
 
+### Friction circle
+
+Press **Friction circle** (摩擦円) to turn the course map area into a friction circle. It plots lateral G (right is positive) and longitudinal G (up is acceleration, down is braking) as a dot.
+
+- The faint rings are the **largest combined G this drive reached** on each surface (paved, dirt, etc.), taken as the top 2% of the values. They are not the car's true limit. The closer the dot is to a ring, the more of the tires you are using
+- The dot turns orange when tire slip is over the limit (see the table below for all the colors)
+- **Trail** (軌跡) draws the last few seconds as a line, and **Cloud** (点群) draws the whole run as faint dots
+- The values at the pointer also show longitudinal / lateral G
+- With a race selected, the rings are built from that race only
+- The dot shows **the direction the car is being pushed**. It is the opposite of the way your body is thrown: right in a right-hand corner, down under braking
+- Dots that fly far outside the rings (over 6G, for example) come from forces other than the tires, such as walls and landings. Even when the tires slide, the dot hardly goes past the edge of the ring
+
+![The friction circle with the switch buttons above and Trail and Cloud below (the solid white ring is the paved ring, dotted rings are other surfaces, the outer red dotted ring is the display limit; the blue and orange line is the recent trail and the yellow dot is now)](../images/usage/18-friction-circle.png)
+
+| Where | Control | What it does |
+|---|---|---|
+| Top | 2D / 3D / Friction circle (摩擦円) | Switches what this area shows. The selected one is blue |
+| Bottom left | **Trail** (軌跡, drop-down) | How many seconds of recent movement to leave behind the current dot (none / 1 s / 3 s / 5 s / 10 s) |
+| Bottom right | **Cloud** (点群) | Each press shows or hides the dots for the whole drive (blue while shown) |
+
+The colors of the dots, lines and rings mean:
+
+| Color / shape | Meaning |
+|---|---|
+| Yellow dot | Now |
+| Orange dot | Now, with tire slip over the limit (1) (the larger of the front and rear) |
+| Red ring (hollow dot) | Outside the display limit (the red dotted ring). A hit from a wall, a landing, etc., drawn at the edge |
+| Blue line | The trail (the last few seconds chosen in **Trail**). Older parts are fainter |
+| Orange line | Parts of the trail where slip was over the limit |
+| Faint dots | The cloud (all the acceleration in the selected race; turn it on or off with **Cloud**) |
+| Solid white ring | The paved ring (the top 2% of combined G in this drive) |
+| Dotted rings | Rings for other surfaces (dirt is brown, grass is green, snow etc. is white). The ring for the surface you are on is drawn thicker with its name |
+| Red dotted ring | The display limit (1.3 times the largest ring) |
+
+"Total … G" at the top left is the distance of the current dot from the center, and "…% of circle" is how far it is out toward the ring for the surface you are on (orange above 100%).
+
+The two pictures below show how to read the dot. The orange arrow is the force the tires put on the car, and the dot on the friction circle points that way. The grey dashed arrow is the way your body is thrown (the opposite direction).
+
+![Braking: the tires pull the car backward, so the dot goes down](../images/usage/16-friction-brake-en.png)
+
+![Cornering: the tires pull the car toward the center of the turn, so in a right-hand corner the dot goes right](../images/usage/17-friction-corner-en.png)
+
+### Performance mode
+
+![The Visualize / Performance switch in the top bar](../images/usage/19-mode-switch.png)
+
+**Visualize / Performance** (見える化 / 性能) in the top bar switches the set of graphs. **Visualize** is the view you know (speed, pedals, steering, slip and the course map). **Performance** shows graphs for checking whether you are using the engine and tires fully. The set of graph rows and what the map area shows (2D, 3D or friction circle) are remembered separately for each mode.
+
+![The performance mode screen (RPM and best shift range, gear, shift gain/loss and shift dots, pedals, slip; the friction circle and power curve on the right)](../images/usage/15-player-performance.png)
+
+#### What you see
+
+| Where | What it shows |
+|---|---|
+| RPM row | RPM and two dashed lines for the **best shift range** of the current gear (where the shift gain/loss is within ±3%). Shifting before the lower line leaves you with less power after the shift; shifting after the upper line means you held on while power was already dropping |
+| Gear row | The current gear |
+| Shift gain/loss row | The power difference if you shifted up right now (% of peak power). Above 0 means shifting would already be faster (you are late); below 0 means it is still too early. Where the throttle is not fully open, a grey band is shown and no value is given |
+| Shift dots | Full-throttle upshifts: purple = early, green = on time (within ±3%), orange = late. Hover over a dot to see the shift RPM and the gain/loss. If you sat on the rev limiter before shifting, the time is shown too (e.g. "on the limiter for 0.8 s") |
+| Right panel | The **friction circle** instead of the course map, with the **power curve** below it. On the power curve, ● is now (a grey ring means not full throttle) and ○ is where you would be if you shifted up right now. The shaded band and dashed lines are the best shift range; the red dotted line is the rev limiter |
+| Values at the pointer | RPM / power, and shift gain/loss (best … rpm) |
+| Found (見つけたもの) | The number of full-throttle shifts and how they split into early / on time / late |
+
+![The power curve dots, shift gain/loss and friction circle moving with playback](../images/usage/demo-performance.gif)
+
+#### How it judges
+
+- The power curve, gear ratios and rev limiter are built per car (car model and PI) from the full-throttle driving in the recording you opened. The limiter is taken from the RPM actually reached at full throttle, not from the maximum RPM the game reports (`engine_max_rpm`)
+- **Shifts within 250 rpm of the limiter are never "early".** The engine can't rev any higher and power is cut at the limiter, so shifting there is the best you can do. The gain/loss is also shown as 0 while you sit on the limiter
+- For cars where it pays to rev to the limiter in every gear (cars that drop a lot of RPM on each shift), the best range is a narrow band just below the limiter. Cars with flat power, such as EVs, have a wide range
+- Automatic transmission and AutoDrive shift at the same RPM in every gear, so such races are marked "looks like automatic shifting" and their shift dots are drawn as hollow rings (the game is shifting, so they are for reference, not a judgement of your driving). Manual driving that shifts on the limiter is not treated as automatic, even though the shift RPM is the same every time
+
+#### When there is no gain/loss
+
+The values at the pointer show the reason under shift gain/loss.
+
+| Message | Meaning |
+|---|---|
+| Not full throttle | Gain/loss is only worked out at full throttle |
+| No higher gear used (if this is the top gear, there is no shift to judge) | The next gear was never used in this recording. If this is the top gear, there is nothing to shift into. The number of gears is not in the telemetry, so the app can't tell which it is |
+| Unavailable (not enough full-throttle data in the next gear) | The next gear was used, but not at full throttle long enough to measure its ratio |
+| Unavailable (… rpm after the shift is outside the power curve) | You haven't driven at full throttle around the RPM you would land on after the shift |
+| Unavailable (no power curve) | There is too little full-throttle driving in the recording to build a power curve |
+
+#### Tips for reading it
+
+- **Lots of orange (late)**: you are hitting the limiter or holding on until power drops. Shift inside the best range
+- **Lots of purple (early)**: you are shifting before the lower line. Hold on a little longer
+- **Uphill, the car feels slow after shifting**: on cars that lose power on each shift, it shows most on hills. It is still faster than sitting on the limiter, so shift at the limiter. If you are about to brake, stay in gear instead
+- **A big drop in power after shifting, even at the limiter**: this is the gearing (tuning), not your driving. Closer gear ratios or a shorter final drive keep you near the power peak after the shift
+
 ### Settings
 
 **Settings** (設定) at the top right lets you change the following. The same settings are used for every recording you open (changes take effect immediately). Each item is also explained in the settings screen.

@@ -23,6 +23,7 @@ docs/telemetry-field-notes.md export-ignore
 docs/development.md         export-ignore
 docs/claude-code-notes.md   export-ignore
 docs/project-overview.md    export-ignore
+docs/project-history.md     export-ignore
 docs/ideas/                 export-ignore
 tools/release.ps1           export-ignore
 tools/dev/                  export-ignore

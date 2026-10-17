@@ -15,8 +15,18 @@ const SERIES = {
   turn:    { label: t("旋回"),       unit: "turn", stroke: "#f5c542", width: 1.2 },
   slipF:   { label: t("前輪スリップ"), unit: "slip", stroke: "#ff9f43" },
   slipR:   { label: t("後輪スリップ"), unit: "slip", stroke: "#54a0ff" },
+  gLong:   { label: t("前後G"),      unit: "g",    stroke: "#2dd4bf" },
+  gLat:    { label: t("横G"),        unit: "g",    stroke: "#f472b6" },
   grade:   { label: t("勾配"),       unit: "grade", stroke: "#a3e635" },
   elev:    { label: t("標高"),       unit: "m",    stroke: "#c3ccd8", width: 1.5 },
+  // 性能モード(docs/spec.md「性能モード」)。最適な範囲は今のギアのもの(破線)。
+  // 変速の得失 = 今すぐ次のギアへ変速した場合の出力の差(最大出力に対する %)。全開の間だけ
+  rpm:     { label: t("回転数"),     unit: "rpm",  stroke: "#4ea1ff" },
+  // 最適な範囲(得失が ±3% 以内)の下と上。出力が平らな車では広く、リミッターまで引っ張る方が得なギアではリミッターの手前
+  optRpm:  { label: t("最適な範囲(下)"), unit: "rpm", stroke: "#e0a33a", width: 1.2, dash: [6, 4] },
+  optRpmHi: { label: t("最適な範囲(上)"), unit: "rpm", stroke: "#e0a33a", width: 1.2, dash: [2, 4] },
+  gain:    { label: t("変速の得失"), unit: "gain", stroke: "#c3ccd8", width: 1.3 },
+  shift:   { label: t("変速の点"),   mark: true },
   surface: { label: t("路面"),       strip: true },
   contact: { label: t("接触の印"),   mark: true },
   jump:    { label: t("ジャンプ"),   mark: true },
@@ -29,8 +39,11 @@ const UNITS = {
   gear:  { label: t("ギア"), range: (u, min, max) => [0, Math.max(6, max || 0) + 0.5] },
   turn:  { label: t("1000/R 正=右"), range: (u, min, max) => { const a = Math.max(10, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
   slip:  { label: t("スリップ 1=限界"), range: (u, min, max) => [0, Math.max(1.5, max || 0)] },
+  g:     { label: t("G 前後は正=加速・横は正=右"), range: (u, min, max) => { const a = Math.max(1, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
   grade: { label: t("勾配 % 正=上り"), range: (u, min, max) => { const a = Math.max(5, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
   // 標高: 上下はコース(選んだレース。全体なら記録)の最低〜最高で固定する(Graphs.elevRange。app.js が決める)
+  rpm:   { label: "rpm", range: (u, min, max) => [Math.max(0, Math.floor(((min ?? 0) - 300) / 1000) * 1000), Math.ceil(((max ?? 8000) + 300) / 1000) * 1000] },
+  gain:  { label: t("% 正=変速が遅い"), range: (u, min, max) => { const a = Math.min(30, Math.max(10, Math.abs(min || 0), Math.abs(max || 0))); return [-a, a]; } },
   m:     { get label() { return t("標高 {unit}", { unit: Units.elevLabel() }); }, range: (u, min, max) => Graphs.elevRange ? Graphs.elevRange.map((v) => Units.elevOf(v)) : [min, max] },
 };
 
@@ -62,6 +75,22 @@ const PRESETS = {
     { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["steer", "turn"] },
     { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["surface"] }, { h: "s", s: ["elev"] }] },
 };
+// 性能モードの段の組み合わせ(見える化のプリセットとは別に覚える)
+const PERF_PRESETS = {
+  // ギアは回転数の段に重ねると最適な範囲の破線と紛れるので、細い段に分ける
+  perf: { name: t("性能(標準)"), lanes: [
+    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }] },
+  perfSpeed: { name: t("性能(速度つき)"), lanes: [
+    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["speed"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }] },
+};
+const DEFAULT_PERF_PRESET = "perf";
+// 全開とみなすアクセル(%)。C# の PowerAnalysis.FullThrottle(242/255)と同じ。系列のアクセルは小数 1 桁に丸めてあるので 94.9
+const PERF_FULL_PCT = 94.9;
+
+// 変速の点の色(早い・適正・遅い。得失を出せないものは灰色)
+const SHIFT_COLORS = { early: "#9d8cff", ok: "#3cc68a", late: "#ff7a45", none: "#9aa1ab" };
+const SHIFT_NAMES = { early: t("早い"), ok: t("適正"), late: t("遅い") };
+
 // 前の版の「詳細」(最後の段が勾配)。そのまま使っていたら、今の「詳細」(標高)に置き換える
 const OLD_P6_LAST = ["grade"];
 const DEFAULT_PRESET = "p3";
@@ -70,8 +99,10 @@ const MARK_COLORS = { start: "#36cfc9", lap: "#e6e6e6", contact: "#ff8a3d", jump
 
 // ---- 設定の保存(この PC のこのアプリの中だけ) ----
 
-const LAYOUT_KEY = "heiso.graphLayout.v1";
-const CUSTOM_KEY = "heiso.graphCustom.v1";
+// 見える化と性能で別に覚える
+const LAYOUT_KEYS = { vis: "heiso.graphLayout.v1", perf: "heiso.graphLayout.perf.v1" };
+const CUSTOM_KEYS = { vis: "heiso.graphCustom.v1", perf: "heiso.graphCustom.perf.v1" };
+const presetsOf = (mode) => (mode === "perf" ? PERF_PRESETS : PRESETS);
 
 function cloneLanes(lanes) { return lanes.map((l) => ({ h: l.h, s: [...l.s] })); }
 
@@ -92,26 +123,28 @@ function storageSet(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 保存できなくても表示は続ける */ }
 }
 
-function loadLayout() {
-  const saved = storageGet(LAYOUT_KEY);
+function loadLayout(mode = "vis") {
+  const saved = storageGet(LAYOUT_KEYS[mode]);
   if (saved && validLanes(saved.lanes)) {
-    if (saved.preset === "p6" && saved.lanes.length === PRESETS.p6.lanes.length
+    if (mode === "vis" && saved.preset === "p6" && saved.lanes.length === PRESETS.p6.lanes.length
         && JSON.stringify(saved.lanes[saved.lanes.length - 1].s) === JSON.stringify(OLD_P6_LAST)) {
       return { preset: "p6", lanes: cloneLanes(PRESETS.p6.lanes) };
     }
     return { preset: saved.preset ?? null, lanes: cloneLanes(saved.lanes) };
   }
-  return { preset: DEFAULT_PRESET, lanes: cloneLanes(PRESETS[DEFAULT_PRESET].lanes) };
+  const def = mode === "perf" ? DEFAULT_PERF_PRESET : DEFAULT_PRESET;
+  return { preset: def, lanes: cloneLanes(presetsOf(mode)[def].lanes) };
 }
 
-function customLanes() {
-  const c = storageGet(CUSTOM_KEY);
+function customLanes(mode) {
+  const c = storageGet(CUSTOM_KEYS[mode]);
   return c && validLanes(c) ? c : null;
 }
 
 // ---- グラフ本体 ----
 
 const Graphs = {
+  mode: "vis",         // "vis"(見える化)/ "perf"(性能)。段の組み合わせはモードごとに覚える
   layout: loadLayout(),
   charts: [],
   data: null,          // { t, speed, ... }
@@ -137,10 +170,21 @@ const Graphs = {
     this.marks = marks || { starts: [], contacts: [] };
   },
 
+  /** モードを切り替える(そのモードで最後に使った段の組み合わせにする) */
+  setMode(mode) {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    const range = this.xRange();
+    this.layout = loadLayout(mode);
+    this.build();
+    if (range) this.setRange(range.min, range.max);
+    renderSettings();
+  },
+
   applyLanes(lanes, preset) {
     const range = this.xRange();
     this.layout = { preset, lanes: cloneLanes(lanes) };
-    storageSet(LAYOUT_KEY, this.layout);
+    storageSet(LAYOUT_KEYS[this.mode], this.layout);
     this.build();
     if (range) this.setRange(range.min, range.max);
     renderSettings();
@@ -191,6 +235,7 @@ const Graphs = {
         contact: lane.s.includes("contact"), jump: lane.s.includes("jump"),
         surface: lane.s.includes("surface"), lines: ids.length > 0,
         slip: lane.s.includes("slipF") || lane.s.includes("slipR"),
+        shift: lane.s.includes("shift"), gain: lane.s.includes("gain"),
       };
       const units = [...new Set(ids.map((id) => SERIES[id].unit))];
 
@@ -201,7 +246,7 @@ const Graphs = {
       // 段の名前: 各系列の前にその線の色の印を付ける(凡例)
       if (lane.s.length) {
         title.innerHTML = lane.s.map((id) => {
-          const color = SERIES[id].stroke || (id === "contact" ? MARK_COLORS.contact : id === "jump" ? MARK_COLORS.jump : null);
+          const color = SERIES[id].stroke || (id === "contact" ? MARK_COLORS.contact : id === "jump" ? MARK_COLORS.jump : id === "shift" ? SHIFT_COLORS.ok : null);
           return (color ? `<i class="sw" style="background:${color}"></i>` : "") + SERIES[id].label;
         }).join(" / ") + (units.length ? t("({units})", { units: units.map((u) => UNITS[u].label).join(" / ") }) : "");
       } else {
@@ -249,7 +294,7 @@ const Graphs = {
       const series = [{}, ...ids.map((id) => {
         const s = SERIES[id];
         return {
-          label: s.label, stroke: s.stroke, width: s.width || 1.5, scale: s.unit, spanGaps: false,
+          label: s.label, stroke: s.stroke, width: s.width || 1.5, scale: s.unit, spanGaps: false, ...(s.dash ? { dash: s.dash } : {}),
           ...(s.stepped ? { paths: uPlot.paths.stepped({ align: 1 }) } : {}),
         };
       })];
@@ -357,6 +402,29 @@ const Graphs = {
       }
     }
 
+    // 変速の得失の段: アクセルが全開でない区間を灰色の帯で、0 の線。
+    // 全開なのに得失が無い所(パワーカーブや次のギアの比が無い)は帯にせず、線を切るだけ(理由は読み取り値に出す)
+    if (flags.gain && this.data.gain) {
+      const d = this.data, [i0, i1] = this._visibleRows(u);
+      ctx.fillStyle = "#3a3f4999";
+      let run = -1;
+      for (let i = i0; i <= i1 + 1; i++) {
+        const partial = i <= i1 && d.gain[i] == null && d.gear[i] != null && d.accel[i] != null && d.accel[i] < PERF_FULL_PCT;
+        if (partial && run < 0) run = i;
+        if (!partial && run >= 0) {
+          const x0 = X(d.t[run]), x1 = X(d.t[Math.min(i, d.t.length - 1)]);
+          ctx.fillRect(x0, top, Math.max(1, x1 - x0), height);
+          run = -1;
+        }
+      }
+      if (u.scales.gain) {
+        const y = u.valToPos(0, "gain", true);
+        ctx.strokeStyle = "#ffffff44";
+        ctx.lineWidth = 1 * dpr;
+        ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+      }
+    }
+
     // スリップの限界(1.0)の目安線
     if (u.scales.slip) {
       const y = u.valToPos(1, "slip", true);
@@ -405,6 +473,29 @@ const Graphs = {
       ctx.strokeStyle = ctx.fillStyle = MARK_COLORS.lap;
       ctx.lineWidth = 1.5 * dpr;
       if (l.finish) ctx.fill(); else ctx.stroke();
+    }
+
+    // 変速の点: 全開のシフトアップ。得失の段なら得失の高さに、それ以外の段は上端に。色は早い・適正・遅い
+    if (flags.shift) {
+      const onGain = !!u.scales.gain;
+      for (const s of this.marks.shifts || []) {
+        const x = X(s.t);
+        if (!inside(x)) continue;
+        const sc = onGain ? u.scales.gain : null;
+        const y = sc && s.gain != null ? u.valToPos(Math.max(sc.min, Math.min(sc.max, s.gain)), "gain", true) : top + 6 * dpr;
+        ctx.beginPath(); ctx.arc(x, y, 5 * dpr, 0, Math.PI * 2);
+        if (s.auto) {
+          // 自動変速らしいレースの変速は、中を抜いた輪(運転の良し悪しではないので参考)
+          ctx.strokeStyle = SHIFT_COLORS[s.verdict || "none"];
+          ctx.lineWidth = 2 * dpr;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = SHIFT_COLORS[s.verdict || "none"];
+          ctx.strokeStyle = "#16181c";
+          ctx.lineWidth = 1.5 * dpr;
+          ctx.fill(); ctx.stroke();
+        }
+      }
     }
 
     const contacts = this.showContacts ? this.marks.contacts : [];
@@ -495,6 +586,17 @@ const Graphs = {
     return best;
   },
 
+  /** 画面上の x の近くにある変速の点 */
+  _shiftNear(u, px) {
+    if (!u._flags.shift) return null;
+    let best = null, bestD = 7;
+    for (const s of this.marks.shifts || []) {
+      const d = Math.abs(u.valToPos(s.t, "x") - px);
+      if (d < bestD) { best = s; bestD = d; }
+    }
+    return best;
+  },
+
   /** 画面上の x の近くにある周の印 */
   _lapNear(u, px) {
     let best = null, bestD = 7;
@@ -525,13 +627,14 @@ const Graphs = {
     let downX = 0;
     u.over.addEventListener("mousemove", (e) => {
       const c = this._contactNear(u, e.offsetX);
-      const j = c ? null : this._jumpNear(u, e.offsetX);
-      const lp = c || j ? null : this._lapNear(u, e.offsetX);
-      const x = c || j || lp ? null : this._excursionNear(u, e.offsetX);
+      const sh = c ? null : this._shiftNear(u, e.offsetX);
+      const j = c || sh ? null : this._jumpNear(u, e.offsetX);
+      const lp = c || sh || j ? null : this._lapNear(u, e.offsetX);
+      const x = c || sh || j || lp ? null : this._excursionNear(u, e.offsetX);
       this.hoverContact = c;
-      u.over.style.cursor = c || j || lp || x ? "pointer" : "";
-      if (c || j || lp || x) {
-        tip.textContent = c
+      u.over.style.cursor = c || sh || j || lp || x ? "pointer" : "";
+      if (c || sh || j || lp || x) {
+        tip.textContent = sh ? shiftText(sh) : c
           ? t("接触 最大 {g}G / {before}→{after} {unit}", { g: c.g.toFixed(1), before: Units.speedOf(c.before).toFixed(0), after: Units.speedOf(c.after).toFixed(0), unit: Units.speedLabel() })
           : j ? t("ジャンプ {sec} 秒 / {speed} / 落差 {drop}", { sec: j.sec.toFixed(1), speed: Units.fmtSpeed(j.kmh), drop: Units.fmtElev(j.drop) })
           : lp ? lapText(lp)
@@ -564,20 +667,23 @@ const Graphs = {
     u.over.addEventListener("mouseup", (e) => {
       if (Math.abs(e.clientX - downX) >= 3 || !this.onSeek) return;
       const c = this._contactNear(u, e.offsetX);
-      const j = c ? null : this._jumpNear(u, e.offsetX);
-      const lp = c || j ? null : this._lapNear(u, e.offsetX);
-      const x = c || j || lp ? null : this._excursionNear(u, e.offsetX);
+      const sh = c ? null : this._shiftNear(u, e.offsetX);
+      const j = c || sh ? null : this._jumpNear(u, e.offsetX);
+      const lp = c || sh || j ? null : this._lapNear(u, e.offsetX);
+      const x = c || sh || j || lp ? null : this._excursionNear(u, e.offsetX);
       // 印の時刻(横軸が距離のときは、印が元の時刻を src_ に持っている)
       const mt = (m, key) => m["src_" + key] ?? m[key];
       if (this.pickMode && this.onPick) {
         // 手動補正: 接触・着地・周の印の近くなら、その瞬間に合わせる
         if (c) this.onPick(mt(c, "t"));
+        else if (sh) this.onPick(mt(sh, "t"));
         else if (j) this.onPick(mt(j, "t1"));
         else if (lp) this.onPick(mt(lp, "t"));
         else if (u.cursor.left >= 0) this.onPick(this.xToSec(u.posToVal(u.cursor.left, "x")));
         return;
       }
       if (c) this.onSeekTime(mt(c, "t") - 1);
+      else if (sh) this.onSeekTime(mt(sh, "t") - 1);
       else if (j) this.onSeekTime(mt(j, "t0") - 1);
       else if (lp) this.onSeekTime(mt(lp, "t") - 1);
       else if (x) this.onSeekTime(mt(x, "t0") - 1);
@@ -595,6 +701,19 @@ const Graphs = {
 /** 逸脱に続くスリップの帯の終わり(スリップが限界を下回るまで。無ければ逸脱の終わりか 2 秒) */
 function excursionEnd(e) {
   return Math.max(e.t1, e.slipEndT ?? e.slipT ?? e.t0 + 2);
+}
+
+/** 変速の点の説明: 「3→4 速 6,890 rpm ・ 得失 -5.2%(早い)」 */
+function shiftText(s) {
+  const rpm = Math.round(s.rpm).toLocaleString("en-US");
+  const text = s.gain == null
+    ? t("{from}→{to} 速 {rpm} rpm(得失を出せない)", { from: s.from, to: s.from + 1, rpm })
+    : t("{from}→{to} 速 {rpm} rpm ・ 得失 {gain}%({verdict})", {
+      from: s.from, to: s.from + 1, rpm, gain: (s.gain > 0 ? "+" : "") + s.gain.toFixed(1), verdict: SHIFT_NAMES[s.verdict],
+    });
+  // リミッターに張り付いてから上げたなら、その時間(張り付いている間は、そのギアでは速度が上がらない)
+  const lim = s.limiterSec >= 0.1 ? t(" ・ リミッター {sec} 秒", { sec: s.limiterSec.toFixed(1) }) : "";
+  return text + lim + (s.auto ? t(" ・ 自動変速らしい走り(参考)") : "");
 }
 
 function fmtLap(sec) {
@@ -626,10 +745,11 @@ function renderSettings() {
   const panel = document.getElementById("graphSettings");
   if (!document.getElementById("settingsDlg").open) return;   // 設定のダイアログを開いているときだけ作る
   const layout = Graphs.layout;
-  const custom = customLanes();
+  const mode = Graphs.mode;
+  const custom = customLanes(mode);
   const used = new Set(layout.lanes.flatMap((l) => l.s));
 
-  const presetOpts = Object.entries(PRESETS).map(([k, p]) =>
+  const presetOpts = Object.entries(presetsOf(mode)).map(([k, p]) =>
     `<option value="${k}"${layout.preset === k ? " selected" : ""}>${p.name}</option>`).join("")
     + (custom ? `<option value="custom"${layout.preset === "custom" ? " selected" : ""}>${t("自分の設定")}</option>` : "")
     + (layout.preset == null ? `<option value="" selected>${t("(変更あり)")}</option>` : "");
@@ -657,6 +777,7 @@ function renderSettings() {
 
   panel.innerHTML = `
     <div class="settingsHead">
+      <span>${mode === "perf" ? t("性能モードの段") : t("見える化の段")}</span>
       <label>${t("プリセット")} <select id="presetSel">${presetOpts}</select></label>
       <button id="saveCustom">${t("自分の設定として保存")}</button>
       <span class="muted">${t("札をドラッグして別の段へ移せます。変更はすぐ反映され、次回も使います。")}</span>
@@ -673,10 +794,10 @@ function renderSettings() {
   panel.querySelector("#presetSel").onchange = (e) => {
     const v = e.target.value;
     if (v === "custom" && custom) Graphs.applyLanes(custom, "custom");
-    else if (PRESETS[v]) Graphs.applyLanes(PRESETS[v].lanes, v);
+    else if (presetsOf(mode)[v]) Graphs.applyLanes(presetsOf(mode)[v].lanes, v);
   };
   panel.querySelector("#saveCustom").onclick = () => {
-    storageSet(CUSTOM_KEY, Graphs.layout.lanes);
+    storageSet(CUSTOM_KEYS[mode], Graphs.layout.lanes);
     Graphs.applyLanes(Graphs.layout.lanes, "custom");
   };
   panel.querySelector("#addLane").onclick = () => edit((l) => l.push({ h: "m", s: [] }));
