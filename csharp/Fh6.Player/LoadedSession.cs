@@ -24,6 +24,7 @@ public sealed class LoadedSession
         .Concat(Wheels.Select(w => "wheel_on_rumble_strip_" + w))
         .Concat(Wheels.Select(w => "wheel_in_puddle_" + w))
         .Concat(Wheels.Select(w => "tire_slip_ratio_" + w))   // ギア比(ホイールスピンの行を除く)
+        .Concat(Wheels.Select(w => "tire_slip_angle_" + w))   // オーバー / アンダー
         .Union(RaceSample.Columns)
         .Union(RaceTimeline.Columns)
         .Union(ReplayDetector.Columns)   // リプレイの自動判別の検算(角速度)
@@ -71,8 +72,8 @@ public sealed class LoadedSession
         return s.Car.Ordinal > 0 ? s.Car : null;
     }
 
-    /// <summary>記録アプリの保存先(このセッションフォルダの 1 つ上。登録ファイルと受け渡し用のファイルがある)</summary>
-    public string SaveFolder => Path.GetDirectoryName(Path.GetFullPath(Folder).TrimEnd('\\', '/'))!;
+    /// <summary>記録アプリの保存先(このセッションフォルダの 1 つ上。アーカイブの中なら、その上。登録ファイルと受け渡し用のファイルがある)</summary>
+    public string SaveFolder => SessionCatalog.SaveRootOf(Folder);
 
     /// <summary>ジャンプ(空中の区間)</summary>
     public required List<AirEvent> Jumps { get; init; }
@@ -84,13 +85,19 @@ public sealed class LoadedSession
     public required List<SurfaceExcursion> Excursions { get; init; }
 
     /// <summary>車ごとの性能(パワーカーブ・ギア比・最適な変速回転数)と、その車の行</summary>
-    public required List<(PowerProfile Profile, List<int> Rows)> Power { get; init; }
+    public List<(PowerProfile Profile, List<int> Rows)> Power { get; private set; } = new();
+
+    /// <summary>Power の車ごとに、パワーカーブを何本の記録の車のプロファイルから作ったか(ApplyProfiles の後。この記録だけなら null)</summary>
+    public Dictionary<(int Ordinal, int Pi), PowerSource> PowerSources { get; } = new();
+
+    /// <summary>車のプロファイルの元: 記録の数、そのうちのレースの数、レースの外の走りがあるか</summary>
+    public sealed record PowerSource(int Recordings, int Races, bool Other);
 
     /// <summary>全開のシフトアップ(性能モードの変速の点)</summary>
-    public required List<ShiftEvent> Shifts { get; init; }
+    public List<ShiftEvent> Shifts { get; private set; } = new();
 
     /// <summary>行ごとに、リミッターに張り付いているか(変速の得失を「早い」にしない)</summary>
-    public required bool[] LimiterBounce { get; init; }
+    public bool[] LimiterBounce { get; private set; } = Array.Empty<bool>();
 
     public required double[] Grade { get; init; }
     public required double[] Turn { get; init; }
@@ -167,6 +174,58 @@ public sealed class LoadedSession
         return Build(Folder, Meta, Package, vt, videoPath, fps, _ => new() { (race, course, car, setup) }, isReplay: true, timeline, start);
     }
 
+    /// <summary>全開のシフトアップと、リミッターに張り付いている行(Power が変わったら作り直す)</summary>
+    private static (List<ShiftEvent> Shifts, bool[] Bounce) ShiftsOf(TelemetryTable t, List<int> raceRows, double[] ts, List<(PowerProfile Profile, List<int> Rows)> power)
+    {
+        var profileOf = new Dictionary<int, PowerProfile>();
+        foreach (var (p, rows) in power) foreach (int i in rows) profileOf[i] = p;
+        var shifts = PowerAnalysis.Upshifts(raceRows, ts, t["gear"], t["current_engine_rpm"], t["accel"], t["power"],
+            (i, g, rpm) => profileOf.TryGetValue(i, out var p) ? p.Gain(g, rpm) : null);
+        // リミッターに張り付いている行と、変速の前に張り付いていた時間
+        var bounce = PowerAnalysis.LimiterBounce(raceRows, t.RowCount, ts, t["gear"], t["current_engine_rpm"], t["accel"], t["power"],
+            i => profileOf.TryGetValue(i, out var p) ? p.LimiterRpm : null);
+        shifts = shifts.Select(s => s with { LimiterMs = PowerAnalysis.TimeAtLimiterMs(raceRows, s.Index, ts, t["gear"], bounce) }).ToList();
+        return (shifts, bounce);
+    }
+
+    /// <summary>この記録の車のプロファイル(UpdateProfiles で読み書きしたもの。リプレイの仮想セッションに渡すため)</summary>
+    public IReadOnlyDictionary<CarSignature, CarProfileFile> ProfileFiles => _profiles;
+
+    /// <summary>
+    /// 性能モードのパワーカーブ・ギア比・リミッターを、車のプロファイル(同じ車の記録を全部合わせたもの)から作り直す。
+    /// プロファイルにカーブが無い車は、この記録だけのまま。変速の点と、リミッターに張り付いている行も作り直す
+    /// </summary>
+    public void ApplyProfiles(IReadOnlyDictionary<CarSignature, CarProfileFile> files)
+    {
+        bool changed = false;
+        for (int k = 0; k < Power.Count; k++)
+        {
+            var (old, rows) = Power[k];
+            var file = files.FirstOrDefault(f => f.Key.Ordinal == old.Ordinal && f.Key.Pi == old.Pi).Value;
+            if (file == null) continue;
+            var cp = new CarProfile(file);
+            var curve = cp.Curve();
+            if (curve == null) continue;
+            var ratios = cp.Ratios();
+            var limiter = cp.LimiterRpm();
+            var opt = ratios.ToDictionary(r => r.Key, r => PowerAnalysis.OptimalShiftRpm(curve, r.Value));
+            var range = new Dictionary<int, (double, double)>();
+            foreach (var (g, r) in ratios)
+                if (PowerAnalysis.OptimalRange(curve, r, limiter) is { } x) range[g] = x;
+            Power[k] = (new PowerProfile(old.Ordinal, old.Pi, curve, ratios, opt, limiter, range), rows);
+            PowerSources[(old.Ordinal, old.Pi)] = new PowerSource(
+                file.Parts.Select(p => p.Folder).Distinct().Count(),
+                file.Parts.Where(p => p.RaceStartRecvTime != null).Select(p => (p.Folder, p.RaceStartRecvTime)).Distinct().Count(),
+                file.Parts.Any(p => p.RaceStartRecvTime == null));
+            changed = true;
+        }
+        if (!changed) return;
+        var ts = Table[TelemetryTable.RecvTime].Select(r => r * 1000).ToArray();
+        var on = Table["is_race_on"];
+        var raceRows = Enumerable.Range(0, Table.RowCount).Where(i => on[i] == 1 && double.IsFinite(ts[i])).OrderBy(i => ts[i]).ToList();
+        (Shifts, LimiterBounce) = ShiftsOf(Table, raceRows, ts, Power);
+    }
+
     private static LoadedSession Build(string folder, SessionMeta meta, PackageInfo? package, TelemetryTable t, string? video, double? fps,
         Func<TelemetryTable, List<(RaceSegment, string?, string?, string?)>> races, bool isReplay = false, RaceTimeline? timeline = null, double virtualStart = 0)
     {
@@ -184,14 +243,7 @@ public sealed class LoadedSession
         var raceRows = Enumerable.Range(0, t.RowCount).Where(i => on[i] == 1 && double.IsFinite(ts[i])).OrderBy(i => ts[i]).ToList();
         var power = PowerAnalysis.Profiles(raceRows, i => ((int)t["car_ordinal"][i], (int)t["car_pi"][i]), ts,
             t["current_engine_rpm"], t["power"], t["accel"], t["gear"], t["speed"], Wheels.Select(w => t["tire_slip_ratio_" + w]).ToArray());
-        var profileOf = new Dictionary<int, PowerProfile>();
-        foreach (var (p, rows) in power) foreach (int i in rows) profileOf[i] = p;
-        var shifts = PowerAnalysis.Upshifts(raceRows, ts, t["gear"], t["current_engine_rpm"], t["accel"], t["power"],
-            (i, g, rpm) => profileOf.TryGetValue(i, out var p) ? p.Gain(g, rpm) : null);
-        // リミッターに張り付いている行と、変速の前に張り付いていた時間
-        var bounce = PowerAnalysis.LimiterBounce(raceRows, t.RowCount, ts, t["gear"], t["current_engine_rpm"], t["accel"], t["power"],
-            i => profileOf.TryGetValue(i, out var p) ? p.LimiterRpm : null);
-        shifts = shifts.Select(s => s with { LimiterMs = PowerAnalysis.TimeAtLimiterMs(raceRows, s.Index, ts, t["gear"], bounce) }).ToList();
+        var (shifts, bounce) = ShiftsOf(t, raceRows, ts, power);
 
         var starts = StartDetector.Detect(ts, on, t["speed"], t["race_pos"], t["position_x"], t["position_z"], t["dist_traveled"]);
         // リプレイは先頭の行(レースタイム 0)がスタート。前に停止区間が無いので、止まっていた時間が短いと見つからない
@@ -279,6 +331,11 @@ public sealed class LoadedSession
             gear = Col(i => C("gear")[i] == 11 ? double.NaN : C("gear")[i], 1, 0),
             slipF = Col(i => Avg("tire_combined_slip_fl", "tire_combined_slip_fr", i), 1, 2),
             slipR = Col(i => Avg("tire_combined_slip_rl", "tire_combined_slip_rr", i), 1, 2),
+            // オーバー / アンダー(後輪 − 前輪の滑り角。正 = オーバー)とカウンター(1 = ハンドルと車の回る向きが逆)。遅いときは出さない
+            balance = Col(i => C("speed")[i] > DerivedSeries.BalanceMinSpeed
+                ? DerivedSeries.SlipBalance(C("tire_slip_angle_fl")[i], C("tire_slip_angle_fr")[i], C("tire_slip_angle_rl")[i], C("tire_slip_angle_rr")[i])
+                : double.NaN, 1, 2),
+            counter = idx.Select(i => on[i] != 0 && DerivedSeries.IsCounterSteer(C("steer")[i], C("angular_velocity_y")[i], C("speed")[i]) ? 1 : (int?)null).ToArray(),
             grade = Col(i => Grade[i], 1, 1),
             elev = Col(i => C("position_y")[i], 1, 1),
             // コース図用(x = 東、z = 北。m)
@@ -289,6 +346,12 @@ public sealed class LoadedSession
             // 前後は + = 加速、横は + = 右。軸の向きは実機のデータで確かめること(docs/telemetry-field-notes.md「加速度の軸」)
             gLong = Col(i => C("acceleration_z")[i], 1 / 9.80665, 2),
             gLat = Col(i => C("acceleration_x")[i], 1 / 9.80665, 2),
+            // サスペンションの縮み(0 = 伸び切り、1 = 縮み切り)。荷重移動の図(前後・左右の縮みの差)に使う
+            susp = new
+            {
+                fl = Col(i => C("norm_suspension_travel_fl")[i], 1, 3), fr = Col(i => C("norm_suspension_travel_fr")[i], 1, 3),
+                rl = Col(i => C("norm_suspension_travel_rl")[i], 1, 3), rr = Col(i => C("norm_suspension_travel_rr")[i], 1, 3),
+            },
             // 性能モード(docs/spec.md「性能モード」): 回転数、今のギアの最適な変速回転数、今すぐ変速した場合の得失(全開の行だけ。%)、
             // 車の番号(perf.cars の位置。性能を出せない行は null)
             rpm = Col(i => C("current_engine_rpm")[i], 1, 0),
@@ -306,6 +369,9 @@ public sealed class LoadedSession
                     ordinal = x.Profile.Ordinal, pi = x.Profile.Pi,
                     curve = x.Profile.Curve == null ? null : x.Profile.Curve.Rpm.Select((r, k) => new[] { r, x.Profile.Curve.Hp[k] }).ToArray(),
                     maxHp = x.Profile.Curve?.MaxHp,
+                    // カーブを何本の記録の車のプロファイルから作ったか(この記録だけなら null)
+                    source = PowerSources.TryGetValue((x.Profile.Ordinal, x.Profile.Pi), out var src)
+                        ? new { recordings = src.Recordings, races = src.Races, other = src.Other } : null,
                     limiter = x.Profile.LimiterRpm,
                     // この記録で使ったギア(全開でなくても)。次のギアの比が無いとき、「上のギアを使っていない」か「行が足りない」かを分ける
                     gears = x.Rows.Select(i => C("gear")[i]).Where(g => g >= 1 && g <= 10).Distinct().OrderBy(g => g).Select(g => (int)g).ToArray(),
@@ -409,6 +475,155 @@ public sealed class LoadedSession
             k.Add(kept[j] ? 1 : 0);
         }
         return new { i, d, k };
+    }
+
+    // ---- 計測モード(docs/spec.md「計測モード」): 車のプロファイル ----
+
+    /// <summary>この記録の車ごとのプロファイル(UpdateProfiles で読み書きしたもの)</summary>
+    private readonly Dictionary<CarSignature, CarProfileFile> _profiles = new();
+
+    /// <summary>
+    /// プロファイルを更新する: 記録の車ごと・レースごと(とレースの外)の部分を作って、プロファイルに足す(同じ部分は置き換える)。
+    /// csv が変わっていなければ作り直さない。リプレイの仮想セッションと、テレメトリーの時刻を振り直したパッケージは足さない
+    /// (同じ走りの元の記録と二重になるため)。書けなくても表示は続ける(失敗の理由を返す)
+    /// </summary>
+    public string? UpdateProfiles(ProfileStore store)
+    {
+        if (IsReplay) return null;
+        var csv = Path.Combine(Folder, string.IsNullOrEmpty(Meta.Files.TelemetryCsv) ? SessionWriter.CsvName : Meta.Files.TelemetryCsv);
+        var fi = new FileInfo(csv);
+        if (!fi.Exists) return null;
+        string folder = Package?.SourceSession is { Length: > 0 } src ? src : Path.GetFileName(Path.GetFullPath(Folder).TrimEnd('\\', '/'));
+        string mtime = fi.LastWriteTimeUtc.ToString("o");
+        bool readOnly = Package?.TelemetryRetimed == true;
+
+        var T = Table;
+        var ts = T[TelemetryTable.RecvTime].Select(r => r * 1000).ToArray();
+        var on = T["is_race_on"];
+        // G の度数に入れない行: 空中、接触の前後 0.3 秒、着地の後 0.5 秒(摩擦円の円の推定と同じ)
+        var exclude = (bool[])Extended.Clone();
+        void Mark(double fromMs, double toMs)
+        {
+            int i = Array.FindIndex(ts, x => x >= fromMs);
+            for (; i >= 0 && i < ts.Length && ts[i] <= toMs; i++) exclude[i] = true;
+        }
+        foreach (var c in Contacts) Mark(ts[c.Index] - 300, ts[c.Index] + 300);
+        foreach (var j in Jumps) Mark(ts[j.StartIndex], ts[j.EndIndex] + 500);
+
+        var groups = new Dictionary<(CarSignature Car, RaceSegment? Race), List<int>>();
+        foreach (int i in Enumerable.Range(0, T.RowCount).Where(i => on[i] == 1 && double.IsFinite(ts[i])).OrderBy(i => ts[i]))
+        {
+            var car = RaceSample.FromTable(T, i).Car;
+            if (car.Ordinal <= 0) continue;
+            var race = Races.Select(r => r.Segment).FirstOrDefault(s => i >= s.StartIndex && i <= s.EndIndex);
+            var key = (car, race);
+            if (!groups.TryGetValue(key, out var list)) groups[key] = list = new();
+            list.Add(i);
+        }
+        string? error = null;
+        foreach (var carGroup in groups.GroupBy(g => g.Key.Car))
+        {
+            var car = carGroup.Key;
+            var file = store.Load(car);
+            bool changed = false;
+            foreach (var ((_, race), rows) in carGroup)
+            {
+                double? start = race?.StartRecvTime;
+                if (readOnly) continue;
+                var assists = race == null ? null : RaceNames.Assists(Meta.Events, race.StartRecvTime, Meta.Session.Assists);
+                if (ProfileStore.IsFresh(file, folder, start, fi.Length, mtime))
+                {
+                    // csv は同じ。補助の設定だけ付け直した(名前を付ける)なら、部分の設定を直す
+                    var old = file.Parts.First(p => p.Folder == folder && p.RaceStartRecvTime == start);
+                    if (AssistKey.Of(old.Assists) != AssistKey.Of(assists) || old.Assists?.Shift != assists?.Shift) { old.Assists = assists; changed = true; }
+                    continue;
+                }
+                var part = ProfilePartBuilder.Build(T, rows, ts, exclude);
+                part.Folder = folder;
+                part.RaceStartRecvTime = start;
+                part.Course = race == null ? null : Races.First(r => r.Segment == race).Course;
+                part.CsvSize = fi.Length;
+                part.CsvMtime = mtime;
+                part.CreatedAt = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
+                part.Assists = assists;
+                part.AutoShift = race != null && AutoOf(race) is { Auto: true };
+                ProfileStore.Upsert(file, part);
+                changed = true;
+            }
+            var name = Races.Where(r => RaceCar(r.Segment) == car).Select(r => r.Car).LastOrDefault(n => n != null);
+            if (name != null && file.Car.Name != name) { file.Car.Name = name; changed = true; }
+            if (changed)
+            {
+                try { store.Save(file); }
+                catch (Exception ex) { error = ex.Message; }
+            }
+            _profiles[car] = file;
+        }
+        return error;
+    }
+
+    /// <summary>レースの補助の設定と、その組(限界を分けるため)</summary>
+    private Assists? AssistsOf(RaceSegment seg) => RaceNames.Assists(Meta.Events, seg.StartRecvTime, Meta.Session.Assists);
+
+    /// <summary>
+    /// 計測モードの画面に渡す値: この記録の車ごとに、プロファイルの値・回転数の帯の判定・補助の設定の組ごとの限界と次の 1 本の指示。
+    /// races は記録のレースごとの車と補助の設定(画面で、選んでいるレースの車と組を出すため)
+    /// </summary>
+    public object BuildMeasure()
+    {
+        object Lim(CarProfile.Limit l) => new { g = l.G, rows = l.Rows, measured = l.Measured };
+        var cars = _profiles.Select(kv =>
+        {
+            var (car, file) = (kv.Key, kv.Value);
+            var all = new CarProfile(file);
+            var eval = MeasurementEvaluator.Evaluate(all);
+            var curve = all.Curve();
+            // 組はレースの補助の設定の全部(ABS・TC・STM・LC)で作り、限界はそれぞれに効く補助だけで部分を選ぶ(CarProfile.ForAssists)
+            var reps = file.Parts.Select(p => p.Assists).Append(null).GroupBy(a => AssistKey.Of(a)).ToDictionary(g => g.Key, g => g.First());
+            var groups = reps.Keys.ToDictionary(k => k, k =>
+            {
+                var p = CarProfile.ForAssists(file, reps[k]);
+                var e = MeasurementEvaluator.Evaluate(p);
+                var surfaces = new[] { "paved", "dirt", "grass", "snow" }.Where(s => s == "paved" || p.HasSurface(s));
+                return new
+                {
+                    parts = file.Parts.Count(x => AssistKey.Of(x.Assists) == k),
+                    limits = surfaces.ToDictionary(s => s, s => new
+                    {
+                        brake = Lim(p.BrakeAll(s)),
+                        brakeBySpeed = p.Brake(s).ToDictionary(b => b.Key.ToString(), b => Lim(b.Value)),
+                        left = Lim(p.Corner(s, "left")),
+                        right = Lim(p.Corner(s, "right")),
+                        launch = Lim(p.Launch(s)),
+                    }),
+                    advice = e.Advice.Select(a => new { kind = a.Kind.ToString(), from = a.From, to = a.To, gear = a.Gear, kmh = a.Kmh, surface = a.Surface, side = a.Side }).ToArray(),
+                };
+            });
+            var top = all.Top();
+            return new
+            {
+                key = ProfileCar.KeyOf(car), name = file.Car.Name, pi = car.Pi, drivetrain = car.Drivetrain, cylinders = car.Cylinders,
+                parts = file.Parts.Count, recordings = file.Parts.Select(p => p.Folder).Distinct().Count(),
+                seconds = Math.Round(file.Parts.Sum(p => p.Seconds)),
+                curve = curve?.Rpm.Select((r, i) => new[] { r, curve.Hp[i] }).ToArray(),
+                maxHp = curve?.MaxHp, peakRpm = curve?.PeakRpm,
+                limiter = eval.Limiter,
+                ratios = all.Ratios().ToDictionary(r => r.Key.ToString(), r => r.Value),
+                gears = all.GearsSeen().ToArray(),
+                top = top == null ? null : new { gear = top.Gear, kmh = top.Kmh, rpm = top.Rpm },
+                coverage = all.Coverage().ToDictionary(g => g.Key.ToString(), g => g.Value.ToDictionary(b => b.Key.ToString(), b => b.Value)),
+                usedFrom = eval.UsedFrom,
+                bands = eval.Bands.Select(b => new { from = b.From, to = b.To, rows = b.Rows, state = b.State.ToString().ToLowerInvariant() }).ToArray(),
+                groups,
+            };
+        }).ToArray();
+        var races = Races.Select(r =>
+        {
+            var a = AssistsOf(r.Segment);
+            var car = RaceCar(r.Segment);
+            return new { car = car is CarSignature c ? ProfileCar.KeyOf(c) : null, assists = a, assistKey = AssistKey.Of(a) };
+        }).ToArray();
+        return new { cars, races };
     }
 
     /// <summary>系列に入れる行の番号(recv_time のある行を recv_time の順に。同じ時刻なら行の順)</summary>

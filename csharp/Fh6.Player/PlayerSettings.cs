@@ -108,10 +108,10 @@ public sealed class PlayerSettings
     public string? PackageFolder() =>
         new[] { LastPackageDir, LastExportDir }.FirstOrDefault(d => !string.IsNullOrEmpty(d) && Directory.Exists(d));
 
-    /// <summary>セッションフォルダを開けたら、その 1 つ上を覚える</summary>
+    /// <summary>セッションフォルダを開けたら、その保存先(1 つ上。アーカイブの中なら、その上)を覚える</summary>
     public void Remember(string sessionFolder)
     {
-        var parent = Path.GetDirectoryName(Path.GetFullPath(sessionFolder).TrimEnd('\\', '/'));
+        var parent = Fh6.Core.SessionCatalog.SaveRootOf(sessionFolder);
         if (string.IsNullOrEmpty(parent) || parent == LastRoot) return;
         LastRoot = parent;
         Save();

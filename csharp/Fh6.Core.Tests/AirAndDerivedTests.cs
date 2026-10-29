@@ -57,6 +57,26 @@ public class AirDetectorTests
 public class DerivedSeriesTests
 {
     [Fact]
+    public void 前後のバランスは後輪から前輪を引く_正がオーバー()
+    {
+        // 20261023_012222 のスピンの直前(左コーナー、滑り角は負)
+        Assert.Equal(0.6, DerivedSeries.SlipBalance(-1.6, -1.6, -2.2, -2.2), 6);
+        Assert.Equal(-0.5, DerivedSeries.SlipBalance(1.5, 1.5, 1.0, 1.0), 6);
+        Assert.Equal(0, DerivedSeries.SlipBalance(-0.4, 0.4, 0.4, -0.4), 6);
+    }
+
+    [Fact]
+    public void カウンターはハンドルと回る向きが逆のとき()
+    {
+        double v = 60;   // m/s
+        Assert.True(DerivedSeries.IsCounterSteer(12, -0.55, v));    // 左へ回っているのに右へ切る
+        Assert.False(DerivedSeries.IsCounterSteer(-10, -0.5, v));   // 左へ回り、左へ切る(ふつうの旋回)
+        Assert.False(DerivedSeries.IsCounterSteer(2, -0.5, v));     // 切りがわずか
+        Assert.False(DerivedSeries.IsCounterSteer(12, -0.05, v));   // ほとんど回っていない
+        Assert.False(DerivedSeries.IsCounterSteer(12, -0.55, 3));   // 遅い
+    }
+
+    [Fact]
     public void 一定の上り坂の勾配()
     {
         // 1m ごとに 0.08m 上がる(8%)

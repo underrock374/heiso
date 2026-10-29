@@ -36,9 +36,9 @@ const DEFAULT_SETTINGS = {
   mapPos: "side",        // コース図の位置: "side"(右の欄)/ "graph"(グラフの横。右下)
   mapW: 0,               // グラフの横のときのコース図の幅(px。0 = グラフの高さに合わせた正方形)
   mapH: 0,               // 同じく高さ(px)
-  viewMode: "vis",       // 表示のモード: "vis"(見える化)/ "perf"(性能。回転数と変速の得失、摩擦円・パワーカーブ)
-  mapMode: "2d",         // コース図の場所に出すもの: "2d"(真上から)/ "3d"(立体)/ "gg"(摩擦円)。見える化のとき
-  mapModePerf: "gg",     // 同じく、性能モードのとき
+  viewMode: "vis",       // 表示のモード: "vis"(見える化)/ "perf"(性能。回転数と変速の得失、荷重移動・摩擦円・パワーカーブ)/ "measure"(計測。車のプロファイル)
+  mapMode: "2d",         // コース図の場所に出すもの: "2d"(真上から)/ "3d"(立体)/ "load"(荷重移動)/ "gg"(摩擦円)。見える化のとき
+  mapModePerf: "load",   // 同じく、性能モードのとき
   mapColor: "lap",       // コース図の色: "lap"(今の周を青)/ "surface"(路面の色)
   map3dView: "tilt",     // 3D の視点: "top"(真上)/ "tilt"(斜め)/ "chase"(後ろから)
   map3dExag: "auto",     // 3D の高さの強調: "auto" / "1" / "3" / "5"
@@ -46,6 +46,7 @@ const DEFAULT_SETTINGS = {
   mapZoom: 0,            // コース図の範囲(一辺の m。0 = 全体。最後に使ったもの)
   ggTrail: 3,            // 摩擦円の軌跡の長さ(秒。0 = 出さない)
   ggCloud: true,         // 摩擦円に、選んでいる範囲の加速度の全部を薄い点で重ねるか
+  ltSmooth: 0.25,        // 荷重移動・摩擦円をならす幅(前後の秒。0.25 / 0.5 / 0.75 / 1)
   view: "all",           // 記録を開いたときの範囲: "all"(全体)/ "race"(レース別。1 レース目)
   axis: "time",          // 記録を開いたときの横軸: "time" / "dist"(距離なら 1 レース目を選ぶ)
   unitSpeed: "auto",     // 速度の単位: "auto"(Windows の地域で決める)/ "kmh" / "mph"
@@ -58,6 +59,7 @@ function loadSettings() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null"); } catch { }
   const s = { ...DEFAULT_SETTINGS, ...(saved || {}) };
+  delete s.ggLoad;   // 前の版の「荷重の向き」(荷重移動に置き換えた)
   if (!saved) {
     // 前の版で個別に覚えていたものを引き継ぐ
     try {
@@ -118,9 +120,9 @@ host.addEventListener("message", (e) => {
   else if (m.type === "replayFound") onReplayFound(m);
   else if (m.type === "videoMissing") onVideoMissing(m);
   else if (m.type === "videoSelected") $("videoSel").value = m.active || "";
+  else if (m.type === "sessionList") Sessions.onList(m);   // sessions.js
 });
 
-$("open").onclick = () => host.postMessage({ type: "open" });
 $("openPackage").onclick = () => host.postMessage({ type: "openPackage" });
 
 // 書き出す: 選んでいるレースを配布パッケージに(保存先は C# で選ぶ)
@@ -275,7 +277,9 @@ function onSession(m) {
     tmarks = { starts: [], contacts: [] };
     CourseMap.setRows(null, null);
     FrictionCircle.setRows(null, null, null);
+    FrictionCircle.setLimits(null);
     PowerChart.setData(null);
+    Measure.setData(null);
     Graphs.setData(null, null);
     Graphs.destroy();
     showMarks();
@@ -286,6 +290,7 @@ function onSession(m) {
   const keepRange = m.keepVideo ? Graphs.xRange() : null;
   tdata = m.series;
   tmarks = m.marks;
+  Measure.setData(m.measure);
   fps = m.fps || null;
   if (fps) frameSec = 1 / fps;
   $("fpsText").textContent = fps ? `${+fps.toFixed(2)} fps` : "";
@@ -330,6 +335,7 @@ video.addEventListener("error", () => {
 
 let pendingStart = null;   // 動画の準備ができたらここへ飛んで再生する(自動でスタート3秒前)
 video.addEventListener("loadedmetadata", () => {
+  renderRaceBar();   // 帯の全体は動画の長さ
   // 再生速度は動画を読み直すと 1 倍に戻るので、選んでいる値をかけ直す
   const on = document.querySelector("#rates button.on");
   if (on) video.playbackRate = Number(on.dataset.rate);
@@ -439,6 +445,15 @@ function followTo(sec, force) {
 }
 
 Graphs.onScale = () => updatePointer(pointerSec);
+// グラフのドラッグ: 再生位置の線を止めたまま、グラフをずらした分だけ再生位置を動かす(graphs.js)。ずらしている間は再生を止める
+Graphs.getPointerX = () => xOf(currentSec());
+Graphs.onDragStart = () => { if (video.src && !video.paused) video.pause(); };
+Graphs.onDragSeek = (x) => {
+  const sec = Math.max(0, Graphs.xToSec(x));
+  if (!isFinite(sec)) return;
+  if (video.src) video.currentTime = Math.min(sec, video.duration || sec);
+  updatePointer(sec);   // 表示範囲は送らない(followTo を呼ばない)。線はすぐに描き直す
+};
 Graphs.onSeek = (x) => seek(Graphs.xToSec(x));
 Graphs.onSeekTime = (sec) => seek(sec);
 
@@ -461,6 +476,7 @@ function indexAt(sec) {
 
 function updatePointer(sec) {
   pointerSec = sec;
+  moveRaceBarHead(sec);
   const xv = xOf(sec);
   for (const u of Graphs.charts) {
     const x = isFinite(xv) ? u.valToPos(xv, "x") : -1;
@@ -476,16 +492,26 @@ function updatePointer(sec) {
   const v = (col, unit, digits = 0) => (i < 0 || d[col][i] == null ? "-" : `${d[col][i].toFixed(digits)}${unit}`);
   $("rSpeed").textContent = i < 0 ? "-" : Units.fmtSpeed(d.speed[i]);
   $("rGear").textContent = i >= 0 && d.gear[i] == null && d.speed[i] != null ? t("変速中") : v("gear", "");
-  if (settings.viewMode === "perf") showPerfReadout(i);
+  if (settings.viewMode === "perf") { showPerfReadout(i); $("pwNote").textContent = PowerChart.note(i); }
   $("rPedal").textContent = `${v("accel", "%")} / ${v("brake", "%")}`;
   $("rSteer").textContent = v("steer", "%");
   const turn = i < 0 ? null : d.turn[i];
   $("rTurn").textContent = turn == null ? "-"
     : Math.abs(turn) < 1 ? t("ほぼ直進") : `R ${Units.fmtLen(1000 / Math.abs(turn))} ${turn > 0 ? t("右") : t("左")}`;
   $("rSlip").textContent = `${v("slipF", "", 2)} / ${v("slipR", "", 2)}`;
+  // 後輪 − 前輪の滑り角(正 = オーバー)。カウンター中は書き添える
+  const bal = i < 0 || !d.balance ? null : d.balance[i];
+  $("rBalance").textContent = bal == null ? "-"
+    : `${bal >= 0 ? "+" : ""}${bal.toFixed(2)}`
+      + (Math.abs(bal) < 0.3 ? "" : bal > 0 ? t("(オーバー)") : t("(アンダー)"))
+      + (d.counter && d.counter[i] === 1 ? t("・カウンター") : "");
   const gi = FrictionCircle.info(i);
   const signed = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
   $("rG").textContent = gi ? `${signed(gi.lon)} / ${signed(gi.lat)} G` : "-";
+  const li = FrictionCircle.loadInfo(i), pct = (x) => `${x >= 0 ? "+" : ""}${Math.round(x * 100)}`;
+  $("rLoad").textContent = li ? `${pct(li.front)} / ${pct(li.side)} %` : "-";
+  const wi = FrictionCircle.wheelInfo(i), w100 = (x) => Math.round(x * 100);
+  $("rWheels").textContent = wi ? `${w100(wi.fl)} / ${w100(wi.fr)}・${w100(wi.rl)} / ${w100(wi.rr)} %` : "-";
   $("rSurface").textContent = i < 0 || !d.surface ? "-" : surfaceText(i);
   $("rGrade").textContent = `${i < 0 || d.grade[i] == null ? "-" : (d.grade[i] > 0 ? "+" : "") + d.grade[i].toFixed(1) + "%"} / ${i < 0 ? "-" : Units.fmtElev(d.elev[i])}`;
 }
@@ -704,7 +730,59 @@ function fillRaces(list, keep) {
   $("exportBtn").disabled = !list.length;
   sel.value = prev !== "" && prev < list.length ? prev : "";
   if (sel.value === "") raceRange = null;
+  renderRaceBar();
 }
+
+// ---- 動画の下のレースの帯 ----
+// 動画の全体(動画が無ければ記録の全体)を横に並べ、レースの区間を色、レースの外を灰色で出す。「前 / 次」で止まる所に印、今の位置に線
+
+/** 帯の全体の長さ(秒)。動画の長さ、無ければ記録の最後の時刻 */
+function raceBarSpan() {
+  if (video.src && isFinite(video.duration) && video.duration > 0) return video.duration;
+  return tdata && tdata.t.length ? tdata.t[tdata.t.length - 1] : 0;
+}
+
+function renderRaceBar() {
+  const bar = $("raceBar"), total = raceBarSpan();
+  bar.hidden = !tdata || !(total > 0);
+  if (bar.hidden) return;
+  const pct = (sec) => `${(Math.min(total, Math.max(0, sec)) / total) * 100}%`;
+  const sel = $("race").value;
+  bar.innerHTML = races.map((r, i) => {
+    const w = (Math.max(0, r.t1 - r.t0) / total) * 100;
+    return `<div class="rbRace${String(i) === sel ? " on" : ""}" style="left:${pct(r.t0)};width:${w}%" title="${escapeHtml(raceLabel(r, i))}">${w > 3 ? `<span>${i + 1}</span>` : ""}</div>`;
+  }).join("")
+    + stopPoints().map((p) => `<div class="rbStop${p.lap ? " lap" : ""}" style="left:${pct(p.t)}"></div>`).join("")
+    + `<div class="rbHead"></div>`;
+  moveRaceBarHead(currentSec());
+}
+
+function moveRaceBarHead(sec) {
+  const head = document.querySelector("#raceBar .rbHead"), total = raceBarSpan();
+  if (head && total > 0) head.style.left = `${(Math.min(total, Math.max(0, sec)) / total) * 100}%`;
+}
+
+// 帯のクリック・ドラッグ: その位置へ(グラフもその位置に合わせる)
+$("raceBar").addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const bar = $("raceBar");
+  const at = (clientX) => {
+    const b = bar.getBoundingClientRect(), total = raceBarSpan();
+    return (Math.min(b.width, Math.max(0, clientX - b.left)) / Math.max(1, b.width)) * total;
+  };
+  let frame = 0, lastX = e.clientX;
+  const go = () => { frame = 0; const sec = at(lastX); seek(sec); followTo(sec, true); };
+  go();
+  const move = (ev) => { lastX = ev.clientX; if (!frame) frame = requestAnimationFrame(go); };
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (frame) { cancelAnimationFrame(frame); go(); }
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -713,6 +791,7 @@ function escapeHtml(s) {
 function leaveRace() {
   raceRange = null;
   $("race").value = "";
+  renderRaceBar();
   updateRaceNamesBtn();
 }
 
@@ -808,6 +887,9 @@ function fillSelect(sel, items, value) {
 }
 
 /** 名前を付けるダイアログを開く(m = C# の raceNamesForm) */
+let rnAssists = null;   // 開いたときの補助の設定(変えたかどうかを見る)
+const RN_ASSIST_KEYS = ["abs", "tcs", "stm", "lc", "shift"];
+const RN_ASSIST_IDS = { abs: "rnAbs", tcs: "rnTcs", stm: "rnStm", lc: "rnLc", shift: "rnShift" };
 function openRaceNames(m) {
   rnForm = m;
   const r = races[m.race];
@@ -830,6 +912,10 @@ function openRaceNames(m) {
       cur ? cur.id : (m.car.setups.length ? m.car.setups[m.car.setups.length - 1].id : ""));
     onSetupChoice();
   }
+  // 補助の設定: 今の設定(session.json の race_edited の assists)。変えたときだけ保存する
+  const a = Measure.data && Measure.data.races[m.race] ? Measure.data.races[m.race].assists : null;
+  rnAssists = {};
+  for (const k of RN_ASSIST_KEYS) { rnAssists[k] = (a && a[k]) || ""; $(RN_ASSIST_IDS[k]).value = rnAssists[k]; }
   $("rnError").hidden = !m.reason;
   $("rnError").textContent = m.reason || "";
   $("rnSave").disabled = !m.editable;
@@ -871,6 +957,9 @@ $("rnSave").onclick = () => {
     carName: rnForm.car ? $("rnCarName").value.trim() : null,
     setupId: rnForm.car ? $("rnSetup").value : null,
     setupName: rnForm.car ? $("rnSetupName").value.trim() : null,
+    // 補助の設定は、変えたときだけ送る(付けていないレースに、分からないを書き足さない)
+    assists: RN_ASSIST_KEYS.some((k) => $(RN_ASSIST_IDS[k]).value !== rnAssists[k])
+      ? Object.fromEntries(RN_ASSIST_KEYS.map((k) => [k, $(RN_ASSIST_IDS[k]).value || null])) : null,
   });
   logEvent(`レースの名前を保存: ${rnForm.race + 1} レース目`);
   $("raceNamesDlg").close();
@@ -913,6 +1002,12 @@ function renderAxis(keepRange) {
   }
   $("axis").value = axis;
   $("axis").disabled = !races.length;
+  // 荷重移動の基準は選んでいるレースで決まるので、グラフの系列(前後の荷重・左右の荷重)より先に作る
+  FrictionCircle.setRows(tdata, r ? r.dist.i : null, tmarks);
+  const ls = FrictionCircle.loadSeries();
+  tdata.loadLong = ls.long;
+  tdata.loadLat = ls.lat;
+  tdata.grip = FrictionCircle.gripSeries();
   if (axis === "dist") {
     distMap = buildDistMap(r);
     Graphs.setData(distView(), distMarks(tmarks));
@@ -931,13 +1026,15 @@ function renderAxis(keepRange) {
   markSpan();
   updateRaceNamesBtn();
   CourseMap.setRows(tdata, r ? r.dist.i : null, cutRows, surfaceColors);
-  FrictionCircle.setRows(tdata, r ? r.dist.i : null, tmarks);
+  FrictionCircle.setLimits(measureLimits(selectedRaceIndex()));
   PowerChart.setData(tdata);
   showShifts(r);
+  renderMeasure();
   if (view3d) CourseView3D.setRows(tdata, r ? r.dist.i : null, cutRows, surfaceColors);
   if (keepRange) Graphs.setRange(keepRange.min, keepRange.max);
   else followTo(currentSec(), true);
   updatePointer(currentSec());
+  renderRaceBar();   // 選んでいるレースを明るく
 }
 
 /**
@@ -1066,6 +1163,8 @@ function elevRange(rows) {
 CourseMap.init($("map"));
 FrictionCircle.trailSec = settings.ggTrail;
 FrictionCircle.cloud = settings.ggCloud;
+FrictionCircle.smoothSec = settings.ltSmooth;
+FrictionCircle.kind = (settings.viewMode === "perf" ? settings.mapModePerf : settings.mapMode) === "gg" ? "gg" : "load";
 FrictionCircle.init($("gg"));
 // コース図の範囲: 全体 / 2km / 1km / 500m / 200m 四方(マイルなら 1mi / 0.5mi / 1500ft / 600ft。全体以外は今の位置を真ん中にして追従)
 /** 範囲のボタンを今の距離の単位で作り直す(全体のボタンはそのまま) */
@@ -1093,14 +1192,17 @@ setMapZoom(settings.mapZoom || 0);
 
 // ---- コース図の位置と大きさ ----
 // 右の欄(動画の横)か、グラフの横(右下。起点は画面の右端とグラフの最上段)。
-// グラフの横のときの大きさは設定の幅・高さ(0 ならグラフの高さに合わせた正方形)。左下の角のドラッグでも変えられる
+// グラフの横のときの大きさは設定の幅・高さ(0 ならグラフの高さに合わせた正方形。見えている高さと幅の MAP_AUTO_MAX_W まで)。左下の角のドラッグでも変えられる
 
 const MAP_MIN_PX = 120;
+const MAP_AUTO_MAX_W = 0.35;   // グラフの横のとき、大きさを決めていなければ、グラフとコース図の行の幅のこの割合まで
 /** コース図の場所に今出している要素(2D の canvas、3D の箱、摩擦円の canvas) */
 /** 今のモードのコース図の場所に出すもの(見える化と性能で別に覚える) */
 const mapModeKey = () => (settings.viewMode === "perf" ? "mapModePerf" : "mapMode");
 const curMapMode = () => settings[mapModeKey()];
-const shownMapEl = () => (curMapMode() === "3d" ? $("map3dBox") : curMapMode() === "gg" ? $("gg") : $("map"));
+/** 荷重移動と摩擦円は、同じ図(FrictionCircle)の描き分け */
+const isGgMode = (mode) => mode === "gg" || mode === "load";
+const shownMapEl = () => (curMapMode() === "3d" ? $("map3dBox") : isGgMode(curMapMode()) ? $("gg") : $("map"));
 const mapHome = $("mapBox").nextElementSibling;   // 右の欄に戻すときの位置(この要素の前)
 
 function placeMap() {
@@ -1125,9 +1227,12 @@ function sizeMap(w, h) {
   if (w == null || h == null) {
     // コース図の下の行(2D / 3D、凡例、範囲のボタン)の高さを除いて、グラフの高さに合わせる
     const shown = shownMapEl();
+    // 段が多いと大きくなりすぎるので、画面に見えている高さと、グラフとコース図の行の幅の MAP_AUTO_MAX_W までにする
     const zoomRow = $("mapBox").offsetHeight - shown.offsetHeight;
-    const auto = Math.max(MAP_MIN_PX, $("charts").offsetHeight - zoomRow);
-    h = settings.mapH || auto;
+    const rowW = $("mapDock").parentElement.clientWidth;
+    const visible = document.querySelector("main").clientHeight;
+    const auto = Math.min($("charts").offsetHeight, visible) - zoomRow;
+    h = settings.mapH || Math.max(MAP_MIN_PX, Math.min(auto, rowW * MAP_AUTO_MAX_W));
     w = settings.mapW || h;
   }
   $("mapDock").style.width = `${w}px`;
@@ -1138,6 +1243,7 @@ function sizeMap(w, h) {
 
 // グラフの段の数や高さが変わったら、合わせる大きさも変わる
 new ResizeObserver(() => sizeMap()).observe($("charts"));
+new ResizeObserver(() => sizeMap()).observe(document.querySelector("main"));   // 窓の高さが変われば、見えている高さも変わる
 
 // 左下の角のドラッグで大きさを変える(右上が起点なので、左へ引くと幅が、下へ引くと高さが増える)
 $("mapGrip").addEventListener("mousedown", (e) => {
@@ -1195,18 +1301,22 @@ function setMapMode(mode) {
   drawMap(indexAt(pointerSec));
 }
 
-/** 2D / 3D / 摩擦円で、出す部品を切り替える(路面の色・区切り・範囲は、コース図だけの部品なので摩擦円では隠す) */
+/** 2D / 3D / 荷重移動 / 摩擦円で、出す部品を切り替える(路面の色・区切り・範囲は、コース図だけの部品なので荷重移動・摩擦円では隠す) */
 function syncMapChrome() {
-  const mode = curMapMode();
+  const mode = curMapMode(), gg = isGgMode(mode);
+  if (gg && FrictionCircle.kind !== mode) FrictionCircle.setKind(mode);
   $("map").hidden = mode !== "2d";
   $("map3dBox").hidden = mode !== "3d";
-  $("gg").hidden = mode !== "gg";
+  $("gg").hidden = !gg;
+  $("gg").title = mode === "gg"
+    ? t("摩擦円。横軸 = 横 G(右が正)、縦軸 = 前後 G(上 = 加速、下 = ブレーキ)。点は車が押されている向き(体が振られる向きの反対。右コーナーで右、ブレーキで下)。円は、選んでいるレースでその路面に出た加速度の上位 2% の大きさ(車の限界そのものではない)。点がオレンジのときは、スリップが限界(1)を超えている。円の外へ大きく飛ぶのは、壁・着地などタイヤ以外の力")
+    : t("荷重移動。サスペンションの縮みの差で、点は沈んでいる側へ寄る(ブレーキで上 = 前輪、右コーナーで左 = 外側の左のタイヤ)。横軸 = 右の 2 輪 − 左の 2 輪、縦軸 = 前の 2 輪 − 後ろの 2 輪(縮みきるまでの長さに対する %)。まっすぐ一定の速さで走っているときを 0 にする。G より遅れて動くので、ブレーキの抜き方や姿勢の揺れが見える。荷重の量そのものではなく目安(ばね・段差でも変わる)。円は、選んでいるレースでその路面に出た差の上位 2%。点がオレンジのときは、スリップが限界(1)を超えている。円のまわりの 4 本の棒は 4 輪それぞれのサスペンション(タイヤの並び。沈むほど短くなる。白の線 = まっすぐ一定の速さのとき、赤 = 浮きかけ、橙 = 縮み切りに近い)");
   $("map3dCtl").hidden = mode !== "3d";
-  $("ggCtl").hidden = mode !== "gg";
-  $("mapSurface").hidden = mode === "gg";
-  $("mapStep").hidden = mode === "gg";
-  $("mapZoom").hidden = mode === "gg";
-  $("mapLegend").hidden = mode === "gg" || settings.mapColor !== "surface";
+  $("ggCtl").hidden = !gg;
+  $("mapSurface").hidden = gg;
+  $("mapStep").hidden = gg;
+  $("mapZoom").hidden = gg;
+  $("mapLegend").hidden = gg || settings.mapColor !== "surface";
   for (const b of document.querySelectorAll("[data-mapmode]")) b.classList.toggle("on", b.dataset.mapmode === mode);
 }
 
@@ -1277,6 +1387,17 @@ $("ggCloud").onclick = () => {
   $("ggCloud").classList.toggle("on", settings.ggCloud);
   FrictionCircle.setCloud(settings.ggCloud);
 };
+// 荷重移動・摩擦円: ならす幅。グラフの前後・左右の荷重と摩擦円の % も同じ値なので、見ている範囲のまま作り直す
+$("ltSmooth").value = String(settings.ltSmooth);
+if (!$("ltSmooth").value) $("ltSmooth").value = "0.25";
+$("ltSmooth").onchange = (e) => {
+  settings.ltSmooth = Number(e.target.value);
+  saveSettings();
+  FrictionCircle.smoothSec = settings.ltSmooth;
+  if (tdata) renderAxis(Graphs.xRange()); else FrictionCircle.setSmooth(settings.ltSmooth);
+  updatePointer(pointerSec);
+  e.target.blur();
+};
 
 /** コース図を描く。今いる周を青、グラフに出している範囲(動画の秒)をさらに明るく */
 function drawMap(i) {
@@ -1287,7 +1408,7 @@ function drawMap(i) {
     else { t0 = r.min; t1 = r.max; }
   }
   if (settings.viewMode === "perf") PowerChart.draw(i);
-  if (curMapMode() === "gg") { FrictionCircle.draw(i); return; }
+  if (isGgMode(curMapMode())) { FrictionCircle.draw(i); return; }
   const lap = lapAt(pointerSec);
   if (curMapMode() === "3d" && view3d) CourseView3D.draw(i, t0, t1, lap ? lap[0] : null, lap ? lap[1] : null);
   else CourseMap.draw(i, t0, t1, lap ? lap[0] : null, lap ? lap[1] : null);
@@ -1687,11 +1808,16 @@ function toast(text, isError, sec) {
 
 // 前 / 次の印へ飛ぶ: スタート(3 秒前。チェックポイント逃しの復帰は 1 秒前)と、周のスタート・ゴール(1 秒前)。
 // 前に印が無ければ動画の先頭へ
+/** 「◀ 前 / 次 ▶」で止まる所(動画の秒、昇順)。{ t, lap(周の印なら true) } */
+function stopPoints() {
+  return [
+    ...(tmarks ? tmarks.starts : []).filter((s) => s.race || Graphs.showLaunches).map((s) => ({ t: s.t - leadOf(s), lap: false })),
+    ...((tmarks && tmarks.laps) || []).map((l) => ({ t: l.t - LAP_LEAD_SEC, lap: true })),
+  ].map((p) => ({ ...p, t: Math.max(0, p.t) })).sort((a, b) => a.t - b.t);
+}
+
 function jumpStart(dir) {
-  const list = [
-    ...(tmarks ? tmarks.starts : []).filter((s) => s.race || Graphs.showLaunches).map((s) => s.t - leadOf(s)),
-    ...((tmarks && tmarks.laps) || []).map((l) => l.t - LAP_LEAD_SEC),
-  ].map((t) => Math.max(0, t)).sort((a, b) => a - b);
+  const list = stopPoints().map((p) => p.t);
   const now = currentSec();
   let target = dir > 0
     ? list.find((t) => t > now + 0.05)
@@ -1720,6 +1846,7 @@ for (const [id, key] of Object.entries(CHECKS)) {
     Graphs.showContacts = settings.contacts;
     Graphs.showLaunches = settings.launches;
     Graphs.redrawMarks();
+    renderRaceBar();   // 「前 / 次」で止まる所が変わる
   };
 }
 
@@ -1843,13 +1970,40 @@ function setViewMode(mode) {
   settings.viewMode = mode;
   saveSettings();
   document.body.classList.toggle("perf", mode === "perf");
+  document.body.classList.toggle("measure", mode === "measure");
   for (const b of document.querySelectorAll("[data-viewmode]")) b.classList.toggle("on", b.dataset.viewmode === mode);
-  Graphs.setMode(mode);
+  // 計測モードは、グラフの場所にプロファイルの欄を出す(グラフの段の組み合わせは見える化・性能のまま)
+  $("measurePanel").hidden = mode !== "measure";
+  $("charts").hidden = mode === "measure";
+  if (mode === "measure") renderMeasure();
+  else Graphs.setMode(mode);
   setMapMode(curMapMode());
   updatePointer(pointerSec);
 }
+
+/**
+ * 摩擦円に描く、この車の限界(計測モードの車のプロファイル)。計測モードの欄と同じ車と補助の設定の組(選んでいるレースのもの。全体なら最初の車)の、
+ * 路面ごとの { left, right, brake, launch }(測れたものだけ。測れていなければ null)。プロファイルが無ければ null
+ */
+function measureLimits(raceIndex) {
+  const d = Measure.data;
+  if (!d || !d.cars || !d.cars.length || !d.races) return null;
+  const race = raceIndex != null ? d.races[raceIndex] : null;
+  const car = d.cars.find((c) => race && c.key === race.car) || d.cars[0];
+  const group = (race && car.groups[race.assistKey]) || car.groups["abs=?,tcs=?,stm=?,lc=?"] || Object.values(car.groups)[0];
+  if (!group || !group.limits) return null;
+  const v = (l) => (l && l.measured ? l.g : null);
+  const out = {};
+  for (const [s, l] of Object.entries(group.limits)) out[s] = { left: v(l.left), right: v(l.right), brake: v(l.brake), launch: v(l.launch) };
+  return out;
+}
+
+/** 計測モードの欄を描く(選んでいるレースの車と、補助の設定の組) */
+function renderMeasure() {
+  if (settings.viewMode === "measure") Measure.render($("measurePanel"), selectedRaceIndex());
+}
 for (const b of document.querySelectorAll("[data-viewmode]")) b.onclick = () => { setViewMode(b.dataset.viewmode); b.blur(); };
 PowerChart.init($("pw"));
-setViewMode(settings.viewMode === "perf" ? "perf" : "vis");
+setViewMode(["perf", "measure"].includes(settings.viewMode) ? settings.viewMode : "vis");
 
 host.postMessage({ type: "ready", method: settings.method });

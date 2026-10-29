@@ -8,7 +8,8 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 ## 動かす
 
 - Visual Studio で `csharp/HEISO.slnx` を開き、`Fh6.Player` をスタートアップにして F5。ビルドすると `HeisoPlayer.exe` ができる
-- 「セッションフォルダを開く」で、記録アプリの保存先にある `yyyyMMdd_HHmmss` のフォルダ(後ろにコメントが付いていてもよい。例: `20260927_211710#夏_鳥野山`)を選ぶ。選ぶ画面は毎回、前回開いた記録の 1 つ上(記録アプリの保存先)から始まる(`%LOCALAPPDATA%\HEISO\Player\player.json` に覚える。初めてのときは「ビデオ\FH6Recorder」)
+- 「記録を開く」で、記録アプリの保存先にある `yyyyMMdd_HHmmss` のフォルダ(後ろにコメントが付いていてもよい。例: `20260927_211710#夏_鳥野山`)の一覧から選ぶ。保存先は前回開いた記録の保存先(1 つ上。アーカイブの中なら、その上。`%LOCALAPPDATA%\HEISO\Player\player.json` に覚える。初めてのときは「ビデオ\FH6Recorder」)。一覧は `session.json` だけから作る(`Fh6.Core` の `SessionCatalog`)。一覧の中の「フォルダを選ぶ…」で、ほかの場所の記録も開ける
+- 一覧で、使い終わった記録を保存先の `archive` へフォルダごと移す・戻す、フォルダ名の日時より後ろを変える(車のプロファイルの中の名前も直す)。仕様は `docs/spec.md` の「記録の一覧とアーカイブ」
 - コマンドラインでも開ける: `HeisoPlayer <セッションフォルダ>`(`session.json` のパスでもよい)。配布パッケージなら `HeisoPlayer <ファイル>.heiso.zip`
 - 「パッケージを開く」で、配布パッケージ(`.heiso.zip`)を開く(下の「配布パッケージ」)
 - Windows 11 には WebView2 ランタイムが入っている。入っていない環境では起動時に案内が出る
@@ -243,6 +244,14 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 ### 摩擦円
 
 コース図の場所を「摩擦円」に切り替えられる(`wwwroot/frictioncircle.js`)。横 G(右が正)と前後 G(上が加速)を点で出し、路面ごとの円(その走りの合成 G の上位 2%)を重ねる。軌跡の長さと点群の有無は下のボタンで変える。計算は `tools/dev/frictioncircle.test.mjs`(node で実行。CI では回さない)で確かめられる。仕様は `docs/spec.md`「摩擦円」。
+
+### 計測モード
+
+上の帯の「計測」(`settings.viewMode` = `measure`)で、グラフの場所(`#measurePanel`)に車のプロファイルを出す(`wwwroot/measure.js`)。
+記録を開いたとき `LoadedSession.UpdateProfiles` が、車ごと・レースごとの部分(`Fh6.Core/CarProfile.cs` の `ProfilePartBuilder`)を作ってプロファイルに足す
+(csv が変わっていなければ作り直さない。補助の設定だけ変わったら付け直す。リプレイの仮想セッションと、時刻を振り直したパッケージは足さない)。
+`BuildMeasure` が、車ごとの値と、補助の設定の組ごとの限界・次の 1 本の指示(`MeasurementEvaluator`)を渡す。指示の文は画面で作る。
+置き場所は `%LOCALAPPDATA%\HEISO\Player\profiles`。確認用の起動(`tools/dev/start-player.ps1`)は `HEISO_PLAYER_PROFILES` で一時フォルダにする。仕様は `docs/spec.md`「計測モード」、形式は `docs/session-format.md`「車のプロファイル」
 
 ### 性能モード
 

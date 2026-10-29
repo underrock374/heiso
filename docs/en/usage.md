@@ -65,7 +65,18 @@ Press **Ctrl+C** in the Recorder's black window.
 
 ## 2. Watch (Player)
 
-Start `HeisoPlayer.exe` and choose a recording folder (such as `20260928_153147`) with **Open session folder** (セッションフォルダを開く).
+Start `HeisoPlayer.exe`, press **Open recording** (記録を開く) and choose a recording from the list (double-click a row, or press **Open**). The list shows the recordings in the Recorder's save folder, newest first. The first time, or for recordings elsewhere, use **Choose save folder…** or **Choose folder…** in the list.
+
+### The recording list and the archive
+
+![Open recording (the recording list: filter at the top, archive and rename buttons at the bottom)](../images/usage/24-player-records.png)
+
+- The list shows the date, name, course, car, number of races, length, whether there is a video, and the size. Cars are listed by model (the same model counts once even with a different PI or class)
+- Type in the box at the top to filter by name, course or car. The menu on the right filters by car model
+- **Archive**: check recordings you are done with and press **Move to archive**. They are moved, folder and video included, to the `archive` folder in the save folder (on the same drive, so it is quick and uses no extra space). Switch to **Archive** at the top to open archived recordings or move them back with **Move back**
+- **Rename**: select a recording and press **Rename…** to change the part of the folder name after the date and time (for example `20261018_020532` → `20261018_020532_StadiumScramble`). The names in measure mode's car profiles are updated too
+- The open recording, a recording in progress, and the newest recording within 30 minutes of stopping cannot be moved or renamed (the Recorder may still add things such as the confirmed course after stopping)
+- There is no way to delete recordings in the Player. Delete them in File Explorer
 
 **If playback stutters, quit the game.** The game keeps drawing on the GPU even behind other windows, so the video freezes for a moment or stays frozen.
 
@@ -90,10 +101,17 @@ When you play, the yellow line moves along with the video.
 | `,` / `.` | Back/forward 1 frame |
 | Ctrl+← / → | Back/forward 10 seconds (30 seconds with Ctrl+Alt) |
 | Click a graph | Go to that moment |
+| Drag a graph | Slides the graphs left or right. The playback line stays where it is, and the playback position moves by the amount you dragged (drag right to go back, left to go forward). Playback stops if it was playing |
+| Shift+drag (over the graphs) | Zoom into the selected range. Double-click to show everything again |
+| Click or drag the scale at the bottom (time / distance) | The playback line follows the mouse (drag right to go forward), like the time ruler in a video editor. The graphs do not move |
+| Two-finger horizontal swipe on a touchpad | Slides the graphs like dragging them (swipe left to go forward) |
 | Ctrl+wheel (over the graphs) | Zoom the graphs horizontally |
 | **◀ Prev** / **Next ▶** | Go to the previous/next mark (3 seconds before a start, 1 second before a lap, etc.) |
+| Click or drag the bar under the video | Go there. The bar is the whole video: blue is a race (the selected race is brighter), grey is outside races, white triangles are where **◀ Prev / Next ▶** stop, and the yellow line is now |
 | **Rate** (速さ) | 0.25× / 0.5× / 1× |
 | Click the course map | Go to the moment you passed that place |
+
+![Moving the playback position with the race bar under the video and the graphs](../images/usage/demo-racebar.gif)
 
 ### Choosing a race
 
@@ -115,11 +133,50 @@ Choosing one moves to 3 seconds before its start and sets the graphs to that rac
 
 ![Course map in 2D and 3D, zooming, and switching views](../images/usage/demo-coursemap.gif)
 
+### Load transfer
+
+Press **Load transfer** (荷重移動) to show, as one dot in the course map area, which way the load has moved front/rear and left/right. When you first use performance mode, this is what it shows (if you used an earlier version, it stays on the friction circle as before).
+
+![Load transfer (under braking the dot moves up toward the front and the two front bars get shorter; Trail, Cloud and Smoothing below)](../images/usage/26-load-transfer.png)
+
+![During playback the dot moves to the front under braking, then to the outside tyres in the following corner](../images/usage/demo-load.gif)
+
+- The dot moves toward **the side where the suspension is compressed**: up (front tyres) under braking, down (rear tyres) under acceleration, left (the outside left tyres) in a right-hand corner
+- Vertical is "front pair compression − rear pair", horizontal is "right pair − left pair", as a % of full travel (the scale is in %). Zero is set from the parts of the drive where you go straight at a steady speed (to remove the difference between front and rear springs)
+- G appears the moment you press a pedal, but the suspension moves after the car settles. So you can see the delay between braking and the load reaching the front, how you release the brake (release it at once and the dot snaps back), and the car pitching and rolling
+- The ring is **the largest difference this drive reached** on that surface (top 2%). Trail, Cloud and the orange dot (slip over the limit) work the same as on the friction circle
+- **Smoothing** (ならし), to the right of Cloud, sets how many seconds either side the dot is averaged over (0.25 s / 0.5 s / 0.75 s / 1 s; shared with the friction circle). Wider removes more of the small jitter and makes the direction easier to follow, but short braking peaks come out lower. The front/rear and left/right load graphs use the same width
+- The values at the pointer show the same numbers as "Load front / right" (front/rear: + = front compressed; left/right: + = right compressed)
+- The four bars around the circle are **the suspension of each wheel**, laid out like the tyres seen from above (front wheels on top, left tyres on the left). Like a real spring, a bar gets shorter as load compresses it. The white line is its length when driving straight at a steady speed. The bars are always smoothed over 0.25 s either side, whatever **Smoothing** is set to, and a thin yellow line marks the most compressed point within that width (so a brief peak that smoothing lowers still shows). Red means nearly lifting (under 5%), orange means nearly fully compressed (over 95%); a bar turns that colour if it happens anywhere within the width. During a jump the dot disappears, all four bars turn red and stretch out, and "Airborne" appears at the top left. On landing all four briefly turn orange and short. This shows what the front/rear and left/right differences cannot, such as only the inside rear wheel lifting. The values are shown as "Travel front / rear"
+- It is a guide, not the actual load on each tyre. Spring stiffness, downforce and bumps also change it. Nothing is shown while the car is in the air (any wheel fully extended)
+
+#### Load transfer and the friction circle
+
+Both show one dot in a circle, but they show different things.
+
+| | Friction circle | Load transfer |
+|---|---|---|
+| What it shows | The force the tyres put on the car (G) | Which tyres carry the car's weight (how far the suspension is compressed) |
+| Dot direction | The way the car is pushed: down under braking, right in a right-hand corner | The way your body is thrown: up (front) under braking, left (outside) in a right-hand corner |
+| How fast it moves | As soon as you use the pedals or steering | After the car settles, a little later |
+| What it tells you | Whether you are using all the tyres' grip | Whether you put weight on the tyres before you turn |
+
+A tyre grips harder the more weight is on it. When braking makes the nose dip, weight moves onto the front tyres and the steering bites better. If you release the brake suddenly, the weight goes back to the rear, the front tyres get light and the car turns less. Load transfer shows where that weight is.
+
+![Braking: the nose dips and the load transfer dot goes up (front), the opposite of the friction circle](../images/usage/20-load-brake-en.png)
+
+![Turning right: the car leans to the outside and the load transfer dot goes left (outside tyres)](../images/usage/21-load-corner-en.png)
+
+The friction circle dot moves as soon as you press a pedal. The load transfer dot moves a little later, after the car settles, and stays for a while after you release. The picture below is a real recording (braking in a right-hander): the load peaked about 0.2 s after the braking G. The graph preset **Load transfer** overlays longitudinal G and front/rear load so you can see this.
+
+![The same braking over time: longitudinal G appears at once, the front dip (load) peaks 0.2 s later and stays after release](../images/usage/22-load-vs-g-en.png)
+
 ### Friction circle
 
 Press **Friction circle** (摩擦円) to turn the course map area into a friction circle. It plots lateral G (right is positive) and longitudinal G (up is acceleration, down is braking) as a dot.
 
 - The faint rings are the **largest combined G this drive reached** on each surface (paved, dirt, etc.), taken as the top 2% of the values. They are not the car's true limit. The closer the dot is to a ring, the more of the tires you are using
+- The green dashed shape is **this car's limit** measured in measure mode (all recordings of the same car combined, for the surface you are on now). Left and right are the cornering limits, down is braking and up is launch; a quarter is drawn only when both of its directions are measured. When a race is selected, it uses the limit for that race's assists (ABS, TC, etc.). Nothing is drawn if nothing has been measured
 - The dot turns orange when tire slip is over the limit (see the table below for all the colors)
 - **Trail** (軌跡) draws the last few seconds as a line, and **Cloud** (点群) draws the whole run as faint dots
 - The values at the pointer also show longitudinal / lateral G
@@ -127,13 +184,14 @@ Press **Friction circle** (摩擦円) to turn the course map area into a frictio
 - The dot shows **the direction the car is being pushed**. It is the opposite of the way your body is thrown: right in a right-hand corner, down under braking
 - Dots that fly far outside the rings (over 6G, for example) come from forces other than the tires, such as walls and landings. Even when the tires slide, the dot hardly goes past the edge of the ring
 
-![The friction circle with the switch buttons above and Trail and Cloud below (the solid white ring is the paved ring, dotted rings are other surfaces, the outer red dotted ring is the display limit; the blue and orange line is the recent trail and the yellow dot is now)](../images/usage/18-friction-circle.png)
+![The friction circle with the switch buttons above and Trail, Cloud and Smoothing below (the solid white ring is the paved ring, dotted rings are other surfaces, the outer red dotted ring is the display limit; the blue and orange line is the recent trail and the yellow dot is now)](../images/usage/18-friction-circle.png)
 
 | Where | Control | What it does |
 |---|---|---|
-| Top | 2D / 3D / Friction circle (摩擦円) | Switches what this area shows. The selected one is blue |
+| Top | 2D / 3D / Load transfer (荷重移動) / Friction circle (摩擦円) | Switches what this area shows. The selected one is blue |
 | Bottom left | **Trail** (軌跡, drop-down) | How many seconds of recent movement to leave behind the current dot (none / 1 s / 3 s / 5 s / 10 s) |
-| Bottom right | **Cloud** (点群) | Each press shows or hides the dots for the whole drive (blue while shown) |
+| Bottom | **Cloud** (点群) | Each press shows or hides the dots for the whole drive (blue while shown) |
+| Bottom right | **Smoothing** (ならし, drop-down) | How many seconds either side the dot is averaged over (0.25 s / 0.5 s / 0.75 s / 1 s). Wider removes more of the small jitter, but short braking peaks come out lower. Shared with load transfer; the rings, cloud, trail and the friction circle % graph use the same width |
 
 The colors of the dots, lines and rings mean:
 
@@ -159,11 +217,11 @@ The two pictures below show how to read the dot. The orange arrow is the force t
 
 ### Performance mode
 
-![The Visualize / Performance switch in the top bar](../images/usage/19-mode-switch.png)
+![The Visualize / Performance / Measure switch in the top bar](../images/usage/19-mode-switch.png)
 
-**Visualize / Performance** (見える化 / 性能) in the top bar switches the set of graphs. **Visualize** is the view you know (speed, pedals, steering, slip and the course map). **Performance** shows graphs for checking whether you are using the engine and tires fully. The set of graph rows and what the map area shows (2D, 3D or friction circle) are remembered separately for each mode.
+**Visualize / Performance** (見える化 / 性能) in the top bar switches the set of graphs. **Visualize** is the view you know (speed, pedals, steering, slip and the course map). **Performance** shows graphs for checking whether you are using the engine and tires fully. The set of graph rows and what the map area shows (2D, 3D, load transfer or friction circle) are remembered separately for each mode.
 
-![The performance mode screen (RPM and best shift range, gear, shift gain/loss and shift dots, pedals, slip; the friction circle and power curve on the right)](../images/usage/15-player-performance.png)
+![The performance mode screen (RPM and best shift range, gear, shift gain/loss and shift dots, pedals, slip; load transfer next to the graphs and the power curve on the right)](../images/usage/15-player-performance.png)
 
 #### What you see
 
@@ -173,15 +231,22 @@ The two pictures below show how to read the dot. The orange arrow is the force t
 | Gear row | The current gear |
 | Shift gain/loss row | The power difference if you shifted up right now (% of peak power). Above 0 means shifting would already be faster (you are late); below 0 means it is still too early. Where the throttle is not fully open, a grey band is shown and no value is given |
 | Shift dots | Full-throttle upshifts: purple = early, green = on time (within ±3%), orange = late. Hover over a dot to see the shift RPM and the gain/loss. If you sat on the rev limiter before shifting, the time is shown too (e.g. "on the limiter for 0.8 s") |
-| Right panel | The **friction circle** instead of the course map, with the **power curve** below it. On the power curve, ● is now (a grey ring means not full throttle) and ○ is where you would be if you shifted up right now. The shaded band and dashed lines are the best shift range; the red dotted line is the rev limiter |
-| Values at the pointer | RPM / power, and shift gain/loss (best … rpm) |
+| Over / understeer row | Rear slip angle minus front slip angle (1.0 is the limit for both). **Above 0 (red) is oversteer**: the rear tyres are sliding before the front. **Below 0 (blue) is understeer**: the front tyres go first. The yellow band at the bottom of the row is **countersteer**, where the steering points the opposite way to the car's rotation, so you can see where the rear stepped out and you were catching it. Not shown below 20 km/h |
+| Right panel | **Load transfer** instead of the course map (switch to the friction circle with the buttons above it), with the **power curve** below it. On the power curve, ● is now (a grey ring means not full throttle) and ○ is where you would be if you shifted up right now. The shaded band and dashed lines are the best shift range; the red dotted line is the rev limiter |
+| Values at the pointer | RPM / power, shift gain/loss (best … rpm), and the over / understeer value (labelled oversteer or understeer beyond ±0.3, and countersteer while it lasts) |
 | Found (見つけたもの) | The number of full-throttle shifts and how they split into early / on time / late |
 
-![The power curve dots, shift gain/loss and friction circle moving with playback](../images/usage/demo-performance.gif)
+![The power curve dot, graphs and load transfer moving with playback](../images/usage/demo-performance.gif)
+
+On the power curve alone, it moves like this. Shifting up from 1st gear right after the start, ● moves to the right and drops back to around ○ at each shift. During a jump the tyres spin freely, so ● sticks to the rev limiter (the right end).
+
+![Power curve: shifting up through the gears right after the start, and hitting the rev limiter during a jump](../images/usage/demo-powercurve.gif)
+
+![The over / understeer row in the graphs (red above 0 is oversteer, blue below is understeer)](../images/usage/25-graph-over-under.png)
 
 #### How it judges
 
-- The power curve, gear ratios and rev limiter are built per car (car model and PI) from the full-throttle driving in the recording you opened. The limiter is taken from the RPM actually reached at full throttle, not from the maximum RPM the game reports (`engine_max_rpm`)
+- The power curve, gear ratios and rev limiter are built per car (car model and PI) from the car profile in measure mode (all recordings of the same car combined). The power curve heading shows "from N recordings of this car (M races and more)" (one recording can contain several races, so both counts are shown; "and more" means driving outside races is included too). If the profile has no curve yet, they are built only from the full-throttle driving in the recording you opened ("from this recording"). The limiter is taken from the RPM actually reached at full throttle, not from the maximum RPM the game reports (`engine_max_rpm`)
 - **Shifts within 250 rpm of the limiter are never "early".** The engine can't rev any higher and power is cut at the limiter, so shifting there is the best you can do. The gain/loss is also shown as 0 while you sit on the limiter
 - For cars where it pays to rev to the limiter in every gear (cars that drop a lot of RPM on each shift), the best range is a narrow band just below the limiter. Cars with flat power, such as EVs, have a wide range
 - Automatic transmission and AutoDrive shift at the same RPM in every gear, so such races are marked "looks like automatic shifting" and their shift dots are drawn as hollow rings (the game is shifting, so they are for reference, not a judgement of your driving). Manual driving that shifts on the limiter is not treated as automatic, even though the shift RPM is the same every time
@@ -200,10 +265,30 @@ The values at the pointer show the reason under shift gain/loss.
 
 #### Tips for reading it
 
+![Shift dots in the shift gain/loss row (green = on time, purple = early, orange = late)](../images/usage/27-shift-dots.png)
+
 - **Lots of orange (late)**: you are hitting the limiter or holding on until power drops. Shift inside the best range
 - **Lots of purple (early)**: you are shifting before the lower line. Hold on a little longer
 - **Uphill, the car feels slow after shifting**: on cars that lose power on each shift, it shows most on hills. It is still faster than sitting on the limiter, so shift at the limiter. If you are about to brake, stay in gear instead
 - **A big drop in power after shifting, even at the limiter**: this is the gearing (tuning), not your driving. Closer gear ratios or a shorter final drive keep you near the power peak after the shift
+
+### Measure mode
+
+**Measure** (計測) in the **Visualize / Performance / Measure** switch in the top bar shows **this car's profile** in place of the graphs.
+The profile combines every recording of the same car (same model, class, PI, drivetrain and cylinders): power curve, gear ratios, rev limiter, top speed, and braking and cornering limits. Each time you open a recording, its driving is added (opening the same recording again does not add it twice). The braking, cornering and launch limits use only driving during races (driving outside races, such as moving around or AutoDrive, does not push the car to the limit and would make the limits too low).
+
+![Measure mode (next run, how much of the power curve is filled, limits)](../images/usage/23-player-measure.png)
+
+| Section | What it shows |
+|---|---|
+| Next run | How to drive to measure what is missing (the top 3 when there are many). For example: "Not enough data at 3,000–4,500 rpm. In gear 4, slow to 85 km/h (3,000 rpm), then go full throttle on a flat straight" |
+| Power curve coverage | Max power, limiter, gear ratios and top speed, and the state of each 500 rpm band (green = enough, orange = not enough, grey = not used, black = unreachable). Below are the rows per gear |
+| Limits | Braking (also per speed), cornering left and right, and launch, per road surface. Values with fewer than 60 rows (2 s) show as "Not yet" |
+
+- **Unused RPM**: RPM below where you land after the biggest drop (the 1st→2nd shift) is not used in driving, so it doesn't need to be filled
+- **Assists**: ABS, traction control and the other assists change the braking, cornering and launch limits, so the limits are shown separately for each race's assist settings (the power curve and gear ratios are not split). Assists are not in the telemetry, so set them per race under **Assists** in **Name** (名前を付ける) in the top bar: ABS, TC (traction control), STM (stability management) and LC (launch control) on / off, and shifting (AT / manual). Each limit uses only races with the same settings for the assists that affect it (braking = ABS, cornering = TC and STM, launch = TC and LC). Races without them set are grouped as "unknown"
+- For a new car, first drive one normal run. Once the gear ratios are known, the advice from the second run on tells you which gear and what speed to use
+- Profiles are stored on this PC in `%LOCALAPPDATA%\HEISO\Player\profiles`. Nothing is written to your recording folders. If you delete them, they are rebuilt when you open the recordings again
 
 ### Settings
 
@@ -225,13 +310,13 @@ The values at the pointer show the reason under shift gain/loss.
 
 | Item | Description |
 |---|---|
-| **Preset** (プリセット) | Choose a fixed combination: **3 rows** (start with this), **2 rows**, **4 rows (classic)**, **Detailed** (6 rows: speed and gear, pedals, steering and turning, slip, surface, elevation). **My layout** is the combination you saved |
+| **Preset** (プリセット) | Choose a fixed combination: **3 rows** (start with this), **2 rows**, **4 rows (classic)**, **Detailed** (6 rows: speed and gear, pedals, steering and turning, slip, surface, elevation), **Load transfer** (5 rows, including longitudinal G with front/rear load and lateral G with left/right load overlaid; **Performance (load transfer)** in performance mode, which also has a friction circle % row). **My layout** is the combination you saved |
 | **Save as my layout** (自分の設定として保存) | Remembers the current combination as **My layout**. You can always go back to it even after choosing another preset |
 | Row height | **Large / Medium / Small** at the left of each row changes the row's height |
 | Tags (speed, gear, etc.) | What is drawn in a row. Drag a tag to move it to another row. × removes it, **+ Add** adds one |
 | ▲ ▼ / **Delete** / **+ Add row** | Reorder rows, delete a row, add a row |
 
-What can be drawn: speed, gear, throttle, brake, steering, turning, front slip, rear slip, grade, elevation, surface (bands for the 4 wheels), contact marks, jumps.
+What can be drawn: speed, gear, throttle, brake, steering, turning, front slip, rear slip, over / understeer, countersteer marks, longitudinal G, lateral G, front/rear load, left/right load, friction circle %, grade, elevation, surface (bands for the 4 wheels), contact marks, jumps. Front/rear and left/right load are the same values (%) as the load transfer view, signed like G so they can share a row with it (front/rear: + = rear compressed; left/right: + = left compressed). You can see G move first and the load arrive, and leave, later. Friction circle % is the same value as "% of circle" at the top left of the friction circle (combined G ÷ the circle for that surface); 100% is the most this drive reached. If it stays at 90–100% through a corner, you are using all the grip. The **Detailed** preset adds countersteer marks to the steering row and an over / understeer row.
 In a row, the first unit has its scale on the left and the second on the right. Changes appear in the graphs immediately and are used the next time too.
 
 **Marks**
@@ -250,7 +335,7 @@ In a row, the first unit has its scale on the left and the second on the right. 
 | **Language** (言語) | **Auto** is Japanese if the Windows display language is Japanese, otherwise English. You can also fix it to 日本語 or English. Changing it reloads the screen (the open recording and the playback position stay) |
 | **Units** (単位) | Choose speed (km/h, mph), distance (m and km / ft and mi) and elevation (m / ft) separately. **Auto** uses miles if the Windows region is the US or the UK, otherwise meters. Only the display changes; the recorded data does not |
 | **When a recording opens** (記録を開いたときの表示) | When a recording opens, whether to show all of it or per race (selecting the first race), and whether the X axis is time or distance. After opening, you can switch at any time with **Race** and **X axis** at the top |
-| **Course map** (コース図) | Where to put it: **Right panel (next to the video)** or **Next to the graphs (bottom right)**. Next to the graphs, you can also set its size (width and height). 0 means a square matching the graph height. You can also drag the bottom-left corner of the course map |
+| **Course map** (コース図) | Where to put it: **Right panel (next to the video)** or **Next to the graphs (bottom right)**. Next to the graphs, you can also set its size (width and height). 0 means a square matching the graph height (up to the visible height and 35% of the width, so it does not get too big with presets that have many rows). You can also drag the bottom-left corner of the course map |
 | **Window** (ウィンドウ) | Remembers the window size and position (including maximized) and restores them next time |
 
 #### Playback

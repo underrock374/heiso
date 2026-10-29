@@ -138,11 +138,13 @@ HEISO の記録アプリ(`csharp/Fh6.Recorder`、書き出し処理は `csharp/F
 | `race_start` | レースが始まった。(a) `race_pos` が 0 → 1 以上、または (b) 停止区間の明けに `race_pos` が 1 以上のまま `cur_race_time` が 0.5 秒未満に戻った(直前のレース中の値は 3 秒超) | `timestamp_ms`、`restart`((b) で見つけたら true)、`start`(`x`・`z`・`yaw`)、`matched`(登録済みのコースと一致したか)、`course_id`・`course_name`(一致したら)、`grid_offset_m`(一致したら。登録済みのスタート地点から後方への距離 m)、`car_setup_id` |
 | `race_end` | `race_pos` が 1 以上 → 0(停止区間の間は見ない) | `timestamp_ms`、`last_speed_kmh`、`course_id` |
 | `course_confirmed` | 画面でコースを登録した、または登録済みのコースを選んだ | `course_id`、`course_name`、`course_kind`、`race_start_recv_time`(どのレース開始についてか)、`start` |
-| `race_edited` | 記録アプリの「直前のレース」か、再生アプリの「名前を付ける」でコース・車名・セッティングを保存した(何も変えずに保存しても、そのときの名前を書く。`changes` は `["確認"]`) | `race_start_recv_time`(どのレース開始についてか)、`changes`(何を直したか)、`course_id`・`course_name`・`course_kind`、`car_ordinal`・`car_name`、`setup_id`・`setup_name`(直した後の値。分からなければ null)、`source`(再生アプリが書いたものだけ `player`。新しく登録するコース・セッティングは、まだ登録ファイルの id が無いので `course_id`・`setup_id` は null) |
+| `race_edited` | 記録アプリの「直前のレース」か、再生アプリの「名前を付ける」でコース・車名・セッティングを保存した(何も変えずに保存しても、そのときの名前を書く。`changes` は `["確認"]`) | `race_start_recv_time`(どのレース開始についてか)、`changes`(何を直したか)、`course_id`・`course_name`・`course_kind`、`car_ordinal`・`car_name`、`setup_id`・`setup_name`(直した後の値。分からなければ null)、`source`(再生アプリが書いたものだけ `player`。新しく登録するコース・セッティングは、まだ登録ファイルの id が無いので `course_id`・`setup_id` は null)、`assists`(任意。2026-10-17。そのレースの補助の設定。`abs`(アンチロック・ブレーキ)・`tcs`(トラクションコントロール)・`stm`(スタビリティ)・`lc`(ローンチコントロール)は `on` / `off`、`shift` は `auto` / `manual`、分からなければ null。キーが無ければ付けていない。`lc` は `session.assists` には無い) |
 
 記録していない間に起きた出来事は書かない(登録ファイルは記録していなくても更新する)。
 
 **記録を止めた後の追記**: `course_confirmed` と `race_edited` は、そのレースが記録中に始まったものなら、記録を止めた後でもそのセッションの `session.json` の `events` の末尾に足す(`complete: true` のまま。`recv_time` は直した時刻なので、`logging_stopped` より後になる)。
+
+**レースの補助の設定の決め方**(計測モード。2026-10-17): そのレース開始の `race_edited` のうち `assists` のある最後のもの。無ければ `session.assists`(記録全体の手入力。今は記録アプリに入力の画面が無いので、ふつうは全部 null)。テレメトリーには補助の設定が出ないので、利用者が付ける。足しただけなので、形式の識別子は変えない。パッケージには、そのレースの `race_edited` が入るので、設定も一緒に渡る
 
 **レースの名前の決め方**(再生アプリ。`Fh6.Core` の `RaceNames`): コース名は、そのレース開始の `race_start` → `course_confirmed` → `race_edited` の順に、後のものほど優先する。車名とセッティング名は、レース開始の時点で最後の `car_detected`(か `car_confirmed`)の値に、同じ車両を確定した `car_confirmed`(レースの後でも、次に車両が変わるか次のレースが始まるまで)、後から直した `race_edited` を重ねる。
 
@@ -177,6 +179,39 @@ HEISO の記録アプリ(`csharp/Fh6.Recorder`、書き出し処理は `csharp/F
 - 取り込みの決まりは記録アプリの「直前のレース」と同じ: `new` のコースは新しく登録する(スタートの位置で一致する同じ名前のコースがあれば登録しない)、登録済みの id なら名前が違えば変える。車名はその車種の名前にする。セッティングも同じ(同じ組で同じ名前があれば登録しない)。見つからない id は飛ばす
 - 書き込みは一時ファイルに書いてから置き換える。読めない・壊れているときは記録を止めず、元のファイルに `.broken` を付けて残し、空として扱う
 - 知らないキーは消さずに残す
+
+### 次の計測(`measure_next.json`、2026-10-18。まだ作っていない。0.4.x で作る)
+
+再生アプリが判定した、車ごとの次の計測を、記録アプリに渡すファイル(`docs/spec.md` の「次の計測を記録アプリに出す」)。保存先フォルダの直下(登録ファイルの隣)に置く。書くのは再生アプリだけで、記録アプリは読むだけ(一時ファイルに書いてから置き換える)。
+
+| キー | 内容 |
+|---|---|
+| `format` | `heiso-measure-next/1` |
+| `updated_at` | ローカル時刻 ISO 8601 |
+| `cars` | 車両の組の鍵(プロファイルのファイル名と同じ `車種_クラス_PI_駆動方式_気筒数`)→ その車の次の計測。車ごとに上書きし、ほかの車の分は残す |
+
+`cars` の値:
+
+| キー | 内容 |
+|---|---|
+| `name` | 車名(分かれば) |
+| `updated_at` | この車の分を書いた時刻 |
+| `recordings` | プロファイルの記録の数 |
+| `assists_key` | 限界の判定に使った補助の設定の組(`abs=on,tcs=on,stm=?,lc=?` など。その記録のいちばん新しいレースの組) |
+| `items[]` | 次の計測(埋めやすい順。無ければ空 = そろっている) |
+
+`items[]` の 1 つ:
+
+| キー | 内容 |
+|---|---|
+| `kind` | `first_run`(初めての車)/ `rpm_band`(回転数の帯)/ `gear_rows`(ギア比)/ `brake` / `corner` / `launch` |
+| `from_rpm`・`to_rpm`・`gear`・`kmh` | `rpm_band`: 足りない帯と、それを埋めるギアと速度(帯の下の回転数になる速度) |
+| `surface` | `brake`・`corner`・`launch`: 路面(`paved`・`dirt`・`grass`・`snow`) |
+| `side` | `corner`: `left` / `right` |
+| `need_rows` | 足りるのに要る行数(回転数の帯は 250 rpm ごとの合計、限界は 60) |
+| `have_rows` | プロファイルに今ある行数 |
+
+記録アプリは、記録中に同じ条件の行を数えて `need_rows − have_rows` から引き、「あと約 N 秒」(30 行 = 1 秒)を出す。
 
 ### video(動画との同期)
 
@@ -359,3 +394,46 @@ OBS の設定値そのものは書き換えない(外から書き換えると OB
 | `skips` | スキップ区間(クリーン再生用。リプレイは空。再生アプリの「スキップ」と同じ計算 `RaceSkips`)。`count`、`total_sec`、`clean_sec`(レースの長さからスキップ区間を除いた長さ)、`ranges[]`: `kind`(`redo` = やり直し / `pause` = 一時停止)、`from_recv_time`・`to_recv_time`、`from_video_sec`・`to_video_sec`(パッケージの動画の秒) |
 
 再生アプリは、パッケージのレースを `race` の範囲と `course.name`・`car.name` から作る(切り出したテレメトリーで判定をやり直さない)。
+
+## 車のプロファイル(再生アプリの領域。2026-10-17)
+
+計測モード(`docs/spec.md`「計測モード」)が使う、車ごとの集計。記録データではなく、記録から作り直せる。
+この PC の再生アプリの領域に置き、記録のフォルダには何も書かない。
+
+- 置き場所: `%LOCALAPPDATA%\HEISO\Player\profiles\<ordinal>_<class_raw>_<pi>_<drivetrain_raw>_<cylinders>.json`(車両の組ごとに 1 ファイル)
+- 形式の識別子: `format` = `heiso-car-profile/1`。互換を壊す変更で数字を上げる。数字が違うファイルは読まずに作り直す
+- 中身は**部分**(`parts[]`)の集まり。部分は、1 つの記録の 1 レース(か、記録の中のレースの外の走り)の集計。プロファイルの値は、部分を合わせて計算する(度数を足してから、パーセンタイルや中央値を取る)
+- 同じ部分は二重に足さない。`folder` と `race_start_recv_time` が同じ部分は置き換える。`telemetry.csv.gz` の大きさか更新時刻が変わっていたら作り直す
+- 記録のフォルダが消えても部分は残す(集計は記録が無くても使える)。消したいときはファイルを消す
+
+| キー | 内容 |
+|---|---|
+| `format` | `heiso-car-profile/1` |
+| `car` | `ordinal`・`class_raw`・`pi`・`drivetrain_raw`・`cylinders`、`name`(分かれば。最後に開いた記録の車名) |
+| `updated_at` | 最後に書いた日時(`yyyy-MM-ddTHH:mm:sszzz`) |
+| `parts[]` | 部分(下の表) |
+
+**部分**(`parts[]` の 1 つ):
+
+| キー | 内容 |
+|---|---|
+| `folder` | 記録のフォルダ名(パッケージなら `package.json` の `source_session`) |
+| `race_start_recv_time` | どのレースか(`race_start` の `recv_time`)。レースの外の走りは null |
+| `course` | コース名(分かれば) |
+| `csv_size` / `csv_mtime` | 作ったときの `telemetry.csv.gz` の大きさ(バイト)と更新時刻(ISO 8601)。変わっていたら作り直す |
+| `created_at` | 部分を作った日時 |
+| `assists` | そのレースの補助の設定(`session.json` の `race_edited` の `assists`。無ければ `session.assists`)。`abs`・`tcs`・`stm`・`lc`・`shift`。分からなければ null。限界は、それぞれに効く補助だけで分ける(ブレーキ = `abs`、旋回 = `tcs`・`stm`、発進 = `tcs`・`lc`) |
+| `auto_shift` | 変速回転数がそろう(自動変速か AutoDrive らしい)。true なら、変速の判定に使わない |
+| `rows` / `seconds` | `is_race_on` の行の数と、走った時間(秒) |
+| `power` | パワーカーブの度数。`{"<区切りの下の回転数>": {"<出力 hp(整数)>": 行数}}`。区切りは 250 rpm。全開(アクセル 242 以上)、ギア 1〜10、出力が正、ギアが変わってから 1 秒の行は除く |
+| `coverage` | 埋まり具合の表の行数。`{"<ギア>": {"<500 rpm の区切りの下>": 行数}}`(`power` と同じ行を、ギアと回転数で数えたもの)|
+| `rpm_full` | 全開の行の回転数の度数(リミッター用)。`{"<25 rpm の区切りの下>": 行数}` |
+| `gear_k` | ギアごとの「回転数 ÷ 速度(m/s)」の度数(ギア比用)。`{"<ギア>": {"<0.5 の区切りの下>": 行数}}`。全開、速度 5 m/s 超、4 輪のスリップ率の絶対値が 0.3 以下の行 |
+| `gears_seen` | 使ったギア(全開でなくても) |
+| `top` | 最後に使ったギアで、全開なのに速度がほぼ上がらなくなった所(空気抵抗の頭打ち)。`gear`・`kmh`・`rpm`。無ければ null |
+| `brake` | ブレーキの限界の度数。`{"<路面>": {"<速度 50 km/h の区切りの下>": {"<減速 G の 0.02 の区切りの下>": 行数}}}`。ブレーキ 90% 以上、50 km/h 超、操舵 20% 未満、4 輪が同じ路面の行 |
+| `corner` | 旋回の限界の度数。`{"<路面>": {"left" / "right": {"<横 G の 0.02 の区切りの下>": 行数}}}`。40 km/h 超、4 輪の合成スリップの最大が 0.8〜1.2、4 輪が同じ路面の行 |
+| `launch` | 発進の度数。`{"<路面>": {"<前後 G の 0.02 の区切りの下>": 行数}}`。1・2 速、全開、100 km/h 未満、4 輪が同じ路面の行 |
+
+路面のキーは `paved`(舗装・ジャンプ台・縁石)・`dirt`・`grass`・`snow`(`surface_rumble` の分類。`DerivedSeries.ClassifySurface`)。
+G の度数は、接触・着地の前後と、空中の行を除く(摩擦円の円の推定と同じ)。

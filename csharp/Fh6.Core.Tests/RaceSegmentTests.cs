@@ -148,6 +148,25 @@ public class RaceNamesTests
         new() { RecvTime = t, Type = type, Data = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject() };
 
     [Fact]
+    public void 補助の設定はそのレースのrace_editedの最後のもの_無ければ記録全体の手入力()
+    {
+        var events = new List<SessionEvent>
+        {
+            Ev(100, "race_start", """{"matched": false}"""),
+            Ev(900, "race_edited", """{"race_start_recv_time": 100.0, "assists": {"abs": "on", "tcs": "on", "shift": "auto"}}"""),
+            Ev(910, "race_edited", """{"race_start_recv_time": 100.0, "car_name": "名前だけ直した"}"""),
+            Ev(920, "race_edited", """{"race_start_recv_time": 100.0, "assists": {"abs": "off", "tcs": "on", "stm": "off", "lc": "on", "shift": null}}"""),
+            Ev(930, "race_edited", """{"race_start_recv_time": 200.0, "assists": {"abs": "on"}}"""),
+        };
+        var a = RaceNames.Assists(events, 100)!;
+        Assert.Equal(("off", "on", "off", "on", (string?)null), (a.Abs, a.Tcs, a.Stm, a.Lc, a.Shift));   // 最後に付けたもの(名前だけの race_edited は飛ばす)
+        Assert.Equal("on", RaceNames.Assists(events, 200)!.Abs);
+        Assert.Null(RaceNames.Assists(events, 300));
+        Assert.Equal("off", RaceNames.Assists(events, 300, new Assists { Tcs = "off" })!.Tcs);   // 記録全体の手入力
+        Assert.Null(RaceNames.Assists(events, 300, new Assists()));                            // 全部 null の session.assists は無いのと同じ
+    }
+
+    [Fact]
     public void コース名は一致したレース開始か_後から登録したものか_直したもの()
     {
         var events = new List<SessionEvent>

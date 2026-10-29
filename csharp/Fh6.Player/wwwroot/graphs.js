@@ -15,8 +15,17 @@ const SERIES = {
   turn:    { label: t("旋回"),       unit: "turn", stroke: "#f5c542", width: 1.2 },
   slipF:   { label: t("前輪スリップ"), unit: "slip", stroke: "#ff9f43" },
   slipR:   { label: t("後輪スリップ"), unit: "slip", stroke: "#54a0ff" },
+  // 後輪 − 前輪の滑り角。0 より上(赤)= オーバー、下(青)= アンダー。塗りは 0 を境に色を変える(balance)
+  balance: { label: t("オーバー / アンダー"), unit: "bal", stroke: "#ff6b6b", balance: true, width: 1.2 },
+  counter: { label: t("カウンター"), mark: true },
   gLong:   { label: t("前後G"),      unit: "g",    stroke: "#2dd4bf" },
   gLat:    { label: t("横G"),        unit: "g",    stroke: "#f472b6" },
+  // 荷重移動(サスペンションの縮みの差。FrictionCircle.loadSeries が選んでいるレースの基準で作る)。
+  // G と同じ段に重ねて遅れを見るので、向きを G に合わせる(前後は正 = 後ろが沈む = 加速の側、左右は正 = 左が沈む = 右コーナーの側)
+  loadLong: { label: t("前後の荷重"), unit: "load", stroke: "#fbbf24", width: 1.6 },
+  loadLat:  { label: t("左右の荷重"), unit: "load", stroke: "#fde68a", width: 1.6 },
+  // 合成 G ÷ その路面の摩擦円の円(FrictionCircle.gripSeries)。100 = この走りで出した最大(上位 2%)。グリップをどれだけ使えたか
+  grip:     { label: t("摩擦円の %"), unit: "grip", stroke: "#c4b5fd", width: 1.3 },
   grade:   { label: t("勾配"),       unit: "grade", stroke: "#a3e635" },
   elev:    { label: t("標高"),       unit: "m",    stroke: "#c3ccd8", width: 1.5 },
   // 性能モード(docs/spec.md「性能モード」)。最適な範囲は今のギアのもの(破線)。
@@ -39,7 +48,11 @@ const UNITS = {
   gear:  { label: t("ギア"), range: (u, min, max) => [0, Math.max(6, max || 0) + 0.5] },
   turn:  { label: t("1000/R 正=右"), range: (u, min, max) => { const a = Math.max(10, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
   slip:  { label: t("スリップ 1=限界"), range: (u, min, max) => [0, Math.max(1.5, max || 0)] },
+  bal:   { label: t("後輪 − 前輪 正=オーバー"), range: (u, min, max) => { const a = Math.min(4, Math.max(1, Math.abs(min || 0), Math.abs(max || 0))); return [-a, a]; } },
   g:     { label: t("G 前後は正=加速・横は正=右"), range: (u, min, max) => { const a = Math.max(1, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
+  // 0 を真ん中にそろえる(G の段に重ねたとき、両方の 0 が同じ高さになるように)
+  grip:  { label: t("% 100=その路面の円"), range: (u, min, max) => [0, Math.min(150, Math.max(120, max || 0))] },
+  load:  { label: t("% 前後は正=後ろが沈む・左右は正=左が沈む"), range: (u, min, max) => { const a = Math.min(100, Math.max(20, Math.abs(min || 0), Math.abs(max || 0))); return [-a, a]; } },
   grade: { label: t("勾配 % 正=上り"), range: (u, min, max) => { const a = Math.max(5, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
   // 標高: 上下はコース(選んだレース。全体なら記録)の最低〜最高で固定する(Graphs.elevRange。app.js が決める)
   rpm:   { label: "rpm", range: (u, min, max) => [Math.max(0, Math.floor(((min ?? 0) - 300) / 1000) * 1000), Math.ceil(((max ?? 8000) + 300) / 1000) * 1000] },
@@ -72,16 +85,21 @@ const PRESETS = {
   p2: { name: t("2段"), lanes: [
     { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "m", s: ["accel", "brake", "steer"] }] },
   p6: { name: t("詳細"), lanes: [
-    { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["steer", "turn"] },
-    { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["surface"] }, { h: "s", s: ["elev"] }] },
+    { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["steer", "turn", "counter"] },
+    { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance"] }, { h: "s", s: ["surface"] }, { h: "s", s: ["elev"] }] },
+  // G(力がかかった)と荷重(車が沈んだ)を同じ段に重ね、荷重が遅れて乗る・戻るのを見る
+  pLoad: { name: t("荷重移動"), lanes: [
+    { h: "m", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["gLong", "loadLong"] }, { h: "m", s: ["gLat", "loadLat"] }, { h: "s", s: ["steer", "counter"] }] },
 };
 // 性能モードの段の組み合わせ(見える化のプリセットとは別に覚える)
 const PERF_PRESETS = {
   // ギアは回転数の段に重ねると最適な範囲の破線と紛れるので、細い段に分ける
   perf: { name: t("性能(標準)"), lanes: [
-    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }] },
+    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance", "counter"] }] },
   perfSpeed: { name: t("性能(速度つき)"), lanes: [
-    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["speed"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }] },
+    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["speed"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance", "counter"] }] },
+  perfLoad: { name: t("性能(荷重移動)"), lanes: [
+    { h: "m", s: ["speed", "gear"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["gLong", "loadLong"] }, { h: "m", s: ["gLat", "loadLat"] }, { h: "s", s: ["grip"] }, { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance", "counter"] }] },
 };
 const DEFAULT_PERF_PRESET = "perf";
 // 全開とみなすアクセル(%)。C# の PowerAnalysis.FullThrottle(242/255)と同じ。系列のアクセルは小数 1 桁に丸めてあるので 94.9
@@ -95,7 +113,22 @@ const SHIFT_NAMES = { early: t("早い"), ok: t("適正"), late: t("遅い") };
 const OLD_P6_LAST = ["grade"];
 const DEFAULT_PRESET = "p3";
 
-const MARK_COLORS = { start: "#36cfc9", lap: "#e6e6e6", contact: "#ff8a3d", jump: "#b388ff", cause: "#ff4d4f", skip: "#9aa1ab" };
+const MARK_COLORS = { start: "#36cfc9", lap: "#e6e6e6", contact: "#ff8a3d", jump: "#b388ff", cause: "#ff4d4f", skip: "#9aa1ab", counter: "#ffd166" };
+// オーバー / アンダーの塗り(0 より上 = オーバー、下 = アンダー)
+const BALANCE_COLORS = { over: "#ff6b6b", under: "#54a0ff" };
+
+/** オーバー / アンダーの色: 0 の高さで赤(上)と青(下)を切り替える縦のグラデーション */
+function balanceGradient(u, scale, alpha) {
+  const { top, height } = u.bbox;
+  if (!u.scales[scale] || height <= 0) return BALANCE_COLORS.over;
+  const y0 = u.valToPos(0, scale, true);
+  const f = Math.min(1, Math.max(0, (y0 - top) / height));
+  const a = Math.round(alpha * 255).toString(16).padStart(2, "0");
+  const g = u.ctx.createLinearGradient(0, top, 0, top + height);
+  g.addColorStop(0, BALANCE_COLORS.over + a); g.addColorStop(f, BALANCE_COLORS.over + a);
+  g.addColorStop(f, BALANCE_COLORS.under + a); g.addColorStop(1, BALANCE_COLORS.under + a);
+  return g;
+}
 
 // ---- 設定の保存(この PC のこのアプリの中だけ) ----
 
@@ -153,6 +186,10 @@ const Graphs = {
   showLaunches: false, // 発進(レース以外のスタート)の印も出すか
   onSeek: null,        // (横軸の値) => void。横軸が距離なら app.js が時刻に直す
   onSeekTime: null,    // (sec) => void。印をクリックしたとき(印は元の時刻を持つ)
+  // ドラッグでグラフを左右にずらす(動画編集ソフトのように、再生位置の線は画面の同じ所に止めたまま)。app.js が渡す:
+  getPointerX: null,   // () => 今の再生位置(横軸の値)
+  onDragStart: null,   // () => void。ずらし始めたとき(再生を止める)
+  onDragSeek: null,    // (横軸の値) => void。ずらした分だけ再生位置を動かす(グラフの表示範囲は送らない)
   onScale: null,       // () => void
   fmtX: (v) => fmtTime(v),   // 横軸の目盛りの書き方
   xToSec: (x) => x,          // 横軸の値 → 動画の秒
@@ -236,6 +273,7 @@ const Graphs = {
         surface: lane.s.includes("surface"), lines: ids.length > 0,
         slip: lane.s.includes("slipF") || lane.s.includes("slipR"),
         shift: lane.s.includes("shift"), gain: lane.s.includes("gain"),
+        counter: lane.s.includes("counter"),
       };
       const units = [...new Set(ids.map((id) => SERIES[id].unit))];
 
@@ -246,7 +284,8 @@ const Graphs = {
       // 段の名前: 各系列の前にその線の色の印を付ける(凡例)
       if (lane.s.length) {
         title.innerHTML = lane.s.map((id) => {
-          const color = SERIES[id].stroke || (id === "contact" ? MARK_COLORS.contact : id === "jump" ? MARK_COLORS.jump : id === "shift" ? SHIFT_COLORS.ok : null);
+          const color = SERIES[id].stroke || (id === "contact" ? MARK_COLORS.contact : id === "jump" ? MARK_COLORS.jump : id === "shift" ? SHIFT_COLORS.ok
+            : id === "counter" ? MARK_COLORS.counter : null);
           return (color ? `<i class="sw" style="background:${color}"></i>` : "") + SERIES[id].label;
         }).join(" / ") + (units.length ? t("({units})", { units: units.map((u) => UNITS[u].label).join(" / ") }) : "");
       } else {
@@ -296,6 +335,8 @@ const Graphs = {
         return {
           label: s.label, stroke: s.stroke, width: s.width || 1.5, scale: s.unit, spanGaps: false, ...(s.dash ? { dash: s.dash } : {}),
           ...(s.stepped ? { paths: uPlot.paths.stepped({ align: 1 }) } : {}),
+          // オーバー / アンダー: 0 までを塗り、0 より上を赤、下を青にする(線も同じ色の切り替え)
+          ...(s.balance ? { fill: (u) => balanceGradient(u, s.unit, 0.45), stroke: (u) => balanceGradient(u, s.unit, 1), fillTo: 0 } : {}),
         };
       })];
 
@@ -304,7 +345,11 @@ const Graphs = {
         width,
         height: HEIGHTS[lane.h] + (isLast ? 30 : 4),
         legend: { show: false },
-        cursor: { sync: { key: "heiso" }, drag: { x: true, y: false } },
+        // ドラッグはグラフをずらす(_wireMouse)。範囲を選んで拡大するのは Shift+ドラッグだけ(uPlot の選択に渡す)。ダブルクリックで全体に戻す
+        cursor: {
+          sync: { key: "heiso" }, drag: { x: true, y: false },
+          bind: { mousedown: (u, targ, handler) => (e) => { if (e.shiftKey) handler(e); return null; } },
+        },
         scales, axes, series,
         hooks: {
           setScale: [(u, key) => { if (key === "x") self._scaleChanged(u); }],
@@ -318,6 +363,7 @@ const Graphs = {
       u.over.appendChild(p);
       u._pointer = p;
       u._flags = flags;
+      u._isLast = isLast;
       this._wireMouse(u);
       this.charts.push(u);
     });
@@ -422,6 +468,28 @@ const Graphs = {
         ctx.strokeStyle = "#ffffff44";
         ctx.lineWidth = 1 * dpr;
         ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+      }
+    }
+
+    // オーバー / アンダー: 0 の線
+    if (u.scales.bal) {
+      const y = u.valToPos(0, "bal", true);
+      ctx.strokeStyle = "#ffffff55";
+      ctx.lineWidth = 1 * dpr;
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke();
+    }
+
+    // カウンター: ハンドルと車の回る向きが逆の所を、段の下に帯で
+    if (flags.counter && this.data.counter) {
+      const c = this.data.counter, tt = this.data.t, h = 6 * dpr;
+      ctx.fillStyle = MARK_COLORS.counter;
+      for (let i = 0; i < c.length; i++) {
+        if (c[i] !== 1) continue;
+        let j = i;
+        while (j + 1 < c.length && c[j + 1] === 1) j++;
+        const x0 = X(tt[i]), x1 = Math.max(X(tt[j]), x0 + 2 * dpr);
+        if (x1 >= left && x0 <= left + width) ctx.fillRect(x0, top + height - h, x1 - x0, h);
+        i = j;
       }
     }
 
@@ -647,6 +715,35 @@ const Graphs = {
       }
     });
     u.over.addEventListener("mouseleave", () => { tip.hidden = true; this.hoverContact = null; });
+    // ドラッグ(Shift なし): 再生位置の線を画面の同じ所に止めたまま、グラフを左右にずらす。ずらした分だけ再生位置が動く
+    // (右へずらすと前の時刻が見え、再生位置は戻る)。3px 未満はクリック(下の mouseup でシーク)
+    u.over.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.shiftKey) return;
+      const r = this.xRange(), p0 = this.getPointerX ? this.getPointerX() : null;
+      if (!r || p0 == null || !isFinite(p0)) return;
+      const startX = e.clientX;
+      let panning = false, frame = 0, lastDx = 0;
+      const apply = () => { frame = 0; this._panTo(r, p0, lastDx, u); };
+      const move = (ev) => {
+        lastDx = ev.clientX - startX;
+        if (!panning) {
+          if (Math.abs(lastDx) < 3) return;
+          panning = true;
+          if (this.onDragStart) this.onDragStart();
+          document.body.style.cursor = "grabbing";
+        }
+        if (!frame) frame = requestAnimationFrame(apply);
+      };
+      const up = () => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        if (!panning) return;
+        if (frame) { cancelAnimationFrame(frame); apply(); }
+        document.body.style.cursor = "";
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
     // Ctrl+ホイールでマウスの位置を中心に拡大・縮小。それ以外のホイールは動画のシーク(app.js)
     u.over.addEventListener("wheel", (e) => {
       e.preventDefault();
@@ -658,11 +755,17 @@ const Graphs = {
         if (max - min < 0.5) return;   // 0.5 秒(距離なら 0.5m)より狭くしない
         this.setRange(min, max);
         if (this.onZoom) this.onZoom(max - min);
+      } else if (!e.shiftKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        // タッチパッドの横の 2 本指: ドラッグと同じく、線を止めたままグラフをずらす(指を左へ動かすと先へ進む)。
+        // Shift+ホイールは Chromium では横の動きとして届くので、コマ送り(onWheelSeek)のまま
+        this._panBy(-e.deltaX * (e.deltaMode === 1 ? 16 : 1), u);
       } else if (this.onWheelSeek) {
         this.onWheelSeek(e);
       }
     }, { passive: false });
-    // クリック(ドラッグでなければ)でシーク。接触の印の上なら、その1秒前へ。ドラッグは拡大、ダブルクリックで戻す
+    // 最後の段の下の目盛り(時間・距離): クリックとドラッグで、線がマウスについて動く(動画編集ソフトの時間の目盛りと同じ。右へ動かすと進む)
+    if (u._isLast) this._wireRuler(u);
+    // クリック(ドラッグでなければ)でシーク。接触の印の上なら、その1秒前へ。ドラッグはずらす(上)、Shift+ドラッグは拡大、ダブルクリックで戻す
     u.over.addEventListener("mousedown", (e) => { downX = e.clientX; });
     u.over.addEventListener("mouseup", (e) => {
       if (Math.abs(e.clientX - downX) >= 3 || !this.onSeek) return;
@@ -679,7 +782,7 @@ const Graphs = {
         else if (sh) this.onPick(mt(sh, "t"));
         else if (j) this.onPick(mt(j, "t1"));
         else if (lp) this.onPick(mt(lp, "t"));
-        else if (u.cursor.left >= 0) this.onPick(this.xToSec(u.posToVal(u.cursor.left, "x")));
+        else this.onPick(this.xToSec(u.posToVal(e.offsetX, "x")));
         return;
       }
       if (c) this.onSeekTime(mt(c, "t") - 1);
@@ -687,7 +790,52 @@ const Graphs = {
       else if (j) this.onSeekTime(mt(j, "t0") - 1);
       else if (lp) this.onSeekTime(mt(lp, "t") - 1);
       else if (x) this.onSeekTime(mt(x, "t0") - 1);
-      else if (u.cursor.left >= 0) this.onSeek(u.posToVal(u.cursor.left, "x"));
+      else this.onSeek(u.posToVal(e.offsetX, "x"));   // クリックした所(カーソルの位置は直前の mousemove のものなので使わない)
+    });
+  },
+
+  /** 表示範囲 r・再生位置 p0 の状態から、dx px ずらす(線は画面の同じ所のまま、再生位置も同じだけ動く) */
+  _panTo(r, p0, dx, u) {
+    const dv = dx * (r.max - r.min) / Math.max(1, u.over.clientWidth);
+    if (this.onDragSeek) this.onDragSeek(p0 - dv);   // 先に再生位置を動かす(範囲を変えたときの線の描き直しが、新しい位置になるように)
+    this.setRange(r.min - dv, r.max - dv);
+  },
+
+  /** 今の状態から dx px ずらす(タッチパッドの横の動き。動くたびに届くので、そのつど今の範囲から) */
+  _panBy(dx, u) {
+    const r = this.xRange(), p0 = this.getPointerX ? this.getPointerX() : null;
+    if (!r || p0 == null || !isFinite(p0) || !dx) return;
+    if (this.onDragStart) this.onDragStart();
+    this._panTo(r, p0, dx, u);
+  },
+
+  /** 最後の段の下の目盛りの上: マウスのある所へ線と再生位置を動かす(押している間はついて動く)。表示範囲は動かさない */
+  _wireRuler(u) {
+    const inRuler = (e) => {
+      const o = u.over.getBoundingClientRect();
+      return e.clientY > o.bottom && e.clientX >= o.left && e.clientX <= o.right;
+    };
+    const seekAt = (clientX) => {
+      const o = u.over.getBoundingClientRect(), x = Math.min(o.width, Math.max(0, clientX - o.left));
+      if (this.onDragSeek) this.onDragSeek(u.posToVal(x, "x"));
+    };
+    u.root.addEventListener("mousemove", (e) => { if (!e.buttons) u.root.style.cursor = inRuler(e) ? "ew-resize" : ""; });
+    u.root.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || !inRuler(e)) return;
+      e.preventDefault();
+      if (this.onDragStart) this.onDragStart();
+      seekAt(e.clientX);
+      let frame = 0, lastX = e.clientX;
+      const move = (ev) => { lastX = ev.clientX; if (!frame) frame = requestAnimationFrame(() => { frame = 0; seekAt(lastX); }); };
+      const up = () => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        if (frame) { cancelAnimationFrame(frame); seekAt(lastX); }
+        document.body.style.cursor = "";
+      };
+      document.body.style.cursor = "ew-resize";
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
     });
   },
 

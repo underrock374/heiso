@@ -38,6 +38,18 @@ const PowerChart = {
     this.draw(this._last);
   },
 
+  /** 見出しの横に、カーブの元(この車の記録を合わせたものか、この記録だけか) */
+  note(pos) {
+    const car = this.carAt(pos);
+    if (!car || !car.curve) return "";
+    const s = car.source;
+    if (!s) return t("この記録から");
+    // 記録の数とレースの数(1 本の記録に何回もレースが入ることがあるため、両方出す)
+    if (!s.races) return t("この車の記録 {n} 本から", { n: s.recordings });
+    return s.other ? t("この車の記録 {n} 本(レース {r} 回ほか)から", { n: s.recordings, r: s.races })
+                   : t("この車の記録 {n} 本(レース {r} 回)から", { n: s.recordings, r: s.races });
+  },
+
   /** 行 pos の車の性能(perf.cars の 1 つ)。無ければ、カーブのある最初の車 */
   carAt(pos) {
     const d = this.data;

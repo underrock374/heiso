@@ -10,7 +10,7 @@
 </head>
 <body>
 <header>
-  <button id="open" class="cmd" data-i18n>セッションフォルダを開く</button>
+  <button id="open" class="cmd" title="記録の保存先の一覧から選んで開く。使い終わった記録をアーカイブへ移す・名前を変えることもできる" data-i18n data-i18n-title>記録を開く</button>
   <button id="openPackage" class="cmd" title="配布パッケージ(.heiso.zip)を開く" data-i18n data-i18n-title>パッケージを開く</button>
   <span id="name" class="name"></span>
   <label title="記録の中のレースを選ぶと、そのスタートの3秒前へ移り、グラフをそのレースの範囲にする" data-i18n-title><span data-i18n>レース</span>
@@ -26,7 +26,8 @@
   </label>
   <span class="seg" id="viewModes">
     <button data-viewmode="vis" title="速度・ペダル・操舵・スリップなど、走りを見るグラフとコース図(0.2.1 までの表示)" data-i18n data-i18n-title>見える化</button>
-    <button data-viewmode="perf" title="回転数と変速の得失、グリップの使い方を見るグラフと、摩擦円・パワーカーブ。エンジンとタイヤを使い切れているかを見る" data-i18n data-i18n-title>性能</button>
+    <button data-viewmode="perf" title="回転数と変速の得失、グリップの使い方を見るグラフと、荷重移動・摩擦円・パワーカーブ。エンジンとタイヤを使い切れているかを見る" data-i18n data-i18n-title>性能</button>
+    <button data-viewmode="measure" title="この車の記録を合わせたプロファイル(パワーカーブ・ギア比・ブレーキや旋回の限界)の埋まり具合と、足りないものを測る次の 1 本の指示" data-i18n data-i18n-title>計測</button>
   </span>
   <button id="skipNow" class="toggle" title="押すたびに ON / OFF。ON なら再生中、やり直し区間(リワインド・チェックポイント逃し)とフォトモード・メニューの一時停止(グラフの灰色の帯)に入ったら飛ばす。この記録を開いている間だけ(開いたときは設定の値)" data-i18n data-i18n-title>スキップ OFF</button>
   <span class="spacer"></span>
@@ -155,11 +156,58 @@
       <input id="rnSetupName" class="text" maxlength="60" autocomplete="off" placeholder="セッティング名(例: B600 AWD)" data-i18n-placeholder>
     </div>
   </section>
+  <section id="rnAssistBox">
+    <h3 data-i18n>補助の設定</h3>
+    <div class="opt rnAssists">
+      <span class="rnPair"><span class="optName">ABS</span><select id="rnAbs"><option value="" data-i18n>分からない</option><option value="on" data-i18n>オン</option><option value="off" data-i18n>オフ</option></select></span>
+      <span class="rnPair"><span class="optName">TC</span><select id="rnTcs"><option value="" data-i18n>分からない</option><option value="on" data-i18n>オン</option><option value="off" data-i18n>オフ</option></select></span>
+      <span class="rnPair"><span class="optName">STM</span><select id="rnStm"><option value="" data-i18n>分からない</option><option value="on" data-i18n>オン</option><option value="off" data-i18n>オフ</option></select></span>
+      <span class="rnPair"><span class="optName">LC</span><select id="rnLc"><option value="" data-i18n>分からない</option><option value="on" data-i18n>オン</option><option value="off" data-i18n>オフ</option></select></span>
+      <span class="rnPair"><span class="optName" data-i18n>変速</span><select id="rnShift"><option value="" data-i18n>分からない</option><option value="auto" data-i18n>AT</option><option value="manual" data-i18n>手動</option></select></span>
+    </div>
+    <p class="muted" data-i18n>このレースを走ったときのゲームの設定(テレメトリーには出ません)。ABS = アンチロック・ブレーキ、TC = トラクションコントロール、STM = スタビリティ(横滑り防止)、LC = ローンチコントロール。計測モードで、ブレーキ(ABS)・旋回(TC と STM)・発進(TC と LC)の限界を、効く設定ごとに分けて出します。</p>
+  </section>
   <p class="muted" data-i18n>この記録にすぐ保存します。登録ファイル(記録の保存先の fh6_registry.json)には、記録アプリが次に起動したとき(起動中なら数秒で)登録します。登録済みのコース・セッティングの名前を書き換えると、登録している名前そのものが変わります。</p>
   <p class="error" id="rnError" hidden></p>
   <div class="dlgFoot">
     <button id="rnCancel" data-i18n>キャンセル</button>
     <button id="rnSave" class="cmd primary" data-i18n>保存</button>
+  </div>
+</dialog>
+
+<dialog id="sessionsDlg" class="settingsDlg sessionsDlg">
+  <div class="dlgHead">
+    <h2 data-i18n>記録を開く</h2>
+    <span class="seg"><button data-sltab="root" data-i18n>保存先</button><button data-sltab="archive" data-i18n>アーカイブ</button></span>
+    <span class="muted slRoot" id="slRoot"></span>
+    <button id="slPickRoot" title="一覧に出す記録の保存先(記録アプリの保存先)を選び直す" data-i18n data-i18n-title>保存先を選ぶ…</button>
+  </div>
+  <div class="slFilter">
+    <input id="slText" class="text" autocomplete="off" placeholder="絞り込み(名前・コース・車)" data-i18n-placeholder>
+    <select id="slCar" title="その車種が入っている記録だけを出す(PI・クラスは問わない)" data-i18n-title></select>
+    <span class="muted" id="slCount"></span>
+  </div>
+  <div class="slTableBox">
+    <table class="slTable">
+      <thead><tr><th></th><th data-i18n>日時</th><th data-i18n>名前</th><th data-i18n>コース</th><th data-i18n>車</th><th data-i18n>レース</th><th data-i18n>長さ</th><th data-i18n>動画</th><th data-i18n>大きさ</th></tr></thead>
+      <tbody id="slBody"></tbody>
+    </table>
+  </div>
+  <div class="slRename" id="slRenameRow" hidden>
+    <span class="muted" id="slRenameStamp"></span>
+    <input id="slRenameText" class="text" maxlength="120" autocomplete="off">
+    <button id="slRenameOk" class="cmd primary" data-i18n>変える</button>
+    <button id="slRenameCancel" data-i18n>やめる</button>
+  </div>
+  <p class="muted slMsg" id="slMsg"></p>
+  <p class="muted" data-i18n>行を選んで「開く」(ダブルクリックでも開けます)。チェックを付けた記録は、動画も含めてフォルダごとアーカイブ(保存先の archive)へ移せます。今開いている記録、記録中の記録、止めてから 30 分以内のいちばん新しい記録は、移したり名前を変えたりできません。</p>
+  <div class="dlgFoot">
+    <button id="slFolder" title="一覧に無い場所の記録を、フォルダを選んで開く" data-i18n data-i18n-title>フォルダを選ぶ…</button>
+    <span class="spacer"></span>
+    <button id="slRename" title="選んでいる記録のフォルダ名の、日時より後ろを変える" data-i18n data-i18n-title>名前を変える…</button>
+    <button id="slMove"></button>
+    <button id="slOpen" class="cmd primary" data-i18n>開く</button>
+    <button id="slClose" data-i18n>閉じる</button>
   </div>
 </dialog>
 
@@ -235,7 +283,7 @@
       <label><span data-i18n>高さ</span> <input type="number" id="sMapH" min="0" max="2000" step="10" class="num"> px</label>
       <button id="sMapAuto" data-i18n>グラフに合わせる</button>
     </div>
-    <p class="muted" data-i18n>大きさはグラフの横のときだけ使う。0 ならグラフの高さに合わせた正方形。グラフの横のとき、コース図の左下の角をドラッグしても変えられる(起点は画面の右端とグラフの最上段)。</p>
+    <p class="muted" data-i18n>大きさはグラフの横のときだけ使う。0 ならグラフの高さに合わせた正方形(画面に見えている高さと、横幅の 35% まで)。グラフの横のとき、コース図の左下の角をドラッグしても変えられる(起点は画面の右端とグラフの最上段)。</p>
   </section>
   <section data-tab="screen">
     <h3 data-i18n>ウィンドウ</h3>
@@ -306,6 +354,7 @@
     <div class="top">
       <div class="videoBox">
         <video id="video" controls preload="auto"></video>
+        <div id="raceBar" class="raceBar" hidden title="動画の全体。色の付いた所がレース(選んでいるレースは明るく)、灰色がレースの外。白の印は「◀ 前 / 次 ▶」で止まる所、黄色の線が今。クリック・ドラッグでその位置へ" data-i18n-title></div>
         <p id="videoError" class="videoError" hidden></p>
       </div>
       <aside class="side">
@@ -346,11 +395,12 @@
           <div class="row mapModes">
             <button data-mapmode="2d" title="真上から見た図(北が上)" data-i18n-title>2D</button>
             <button data-mapmode="3d" title="標高を高さにした立体の図" data-i18n-title>3D</button>
+            <button data-mapmode="load" title="サスペンションの縮みから、荷重が前後・左右のどちらへ移ったかを 1 つの点で見る図。コース図と同じ場所に出る" data-i18n data-i18n-title>荷重移動</button>
             <button data-mapmode="gg" title="前後の加速度(縦)と横の加速度(横)を 1 つの点で見る図(摩擦円)。コース図と同じ場所に出る" data-i18n data-i18n-title>摩擦円</button>
             <button id="mapSurface" title="4 輪の路面が同じ所はその路面の色、違う所は紫で塗る" data-i18n data-i18n-title>路面の色</button>
             <button id="mapStep" title="拡大中、今の位置にいつも合わせるのではなく、直線の真ん中で区切った区間ごとに視点を決め、区間が変わったら移る(コーナーの途中やスピンで視点が動かない)" data-i18n data-i18n-title>区切り</button>
           </div>
-          <canvas id="gg" class="gg" hidden title="摩擦円。横軸 = 横 G(右が正)、縦軸 = 前後 G(上 = 加速、下 = ブレーキ)。点は車が押されている向き(体が振られる向きの反対。右コーナーで右、ブレーキで下)。円は、選んでいるレースでその路面に出た加速度の上位 2% の大きさ(車の限界そのものではない)。点がオレンジのときは、スリップが限界(1)を超えている。円の外へ大きく飛ぶのは、壁・着地などタイヤ以外の力" data-i18n-title></canvas>
+          <canvas id="gg" class="gg" hidden></canvas>
           <div class="row mapModes" id="map3dCtl" hidden>
             <button data-view="top" title="真上から(北が上)" data-i18n data-i18n-title>真上</button>
             <button data-view="tilt" title="斜め上から" data-i18n data-i18n-title>斜め</button>
@@ -365,7 +415,12 @@
               <option value="0" data-i18n>なし</option><option value="1" data-i18n>1秒</option><option value="3" data-i18n>3秒</option>
               <option value="5" data-i18n>5秒</option><option value="10" data-i18n>10秒</option>
             </select>
-            <button id="ggCloud" title="選んでいるレースで出た加速度の全部を、薄い点で重ねる(円の大きさの目安)" data-i18n data-i18n-title>点群</button>
+            <button id="ggCloud" title="選んでいるレースで出た値の全部を、薄い点で重ねる(円の大きさの目安)" data-i18n data-i18n-title>点群</button>
+            <span class="muted" id="ltSmoothLabel" data-i18n>ならし</span>
+            <select id="ltSmooth" title="点を、前後何秒の平均でならすか(荷重移動と摩擦円で同じ)。広いほど細かい揺れが消え、短い山は低く出る。グラフの前後・左右の荷重と摩擦円の % も同じ幅でならす" data-i18n-title>
+              <option value="0.25" data-i18n>0.25秒</option><option value="0.5" data-i18n>0.5秒</option>
+              <option value="0.75" data-i18n>0.75秒</option><option value="1" data-i18n>1秒</option>
+            </select>
           </div>
           <div id="mapLegend" class="mapLegend" hidden></div>
           <div class="row mapZoom" id="mapZoom" title="コース図の範囲。全体以外は今の位置を真ん中にして追従する(一辺の長さ)" data-i18n-title>
@@ -386,7 +441,10 @@
           <tr><th data-i18n>操舵</th><td id="rSteer">-</td></tr>
           <tr><th data-i18n>旋回</th><td id="rTurn">-</td></tr>
           <tr><th data-i18n>スリップ 前 / 後</th><td id="rSlip">-</td></tr>
+          <tr><th data-i18n>オーバー / アンダー</th><td id="rBalance">-</td></tr>
           <tr><th title="車体座標の加速度。前後は + = 加速、横は + = 右" data-i18n data-i18n-title>G 前後 / 横</th><td id="rG">-</td></tr>
+          <tr><th title="サスペンションの縮みの差(縮みきるまでの長さに対する %。まっすぐ一定の速さのときが 0)。前後は + = 前が沈む、左右は + = 右が沈む" data-i18n data-i18n-title>荷重 前後 / 左右</th><td id="rLoad">-</td></tr>
+          <tr><th title="4 輪のサスペンションの縮み(0 = 伸び切り、100 = 縮み切り)。前の左 / 右・後ろの左 / 右" data-i18n data-i18n-title>縮み 前 / 後ろ</th><td id="rWheels">-</td></tr>
           <tr><th data-i18n>路面</th><td id="rSurface">-</td></tr>
           <tr><th data-i18n>勾配 / 標高</th><td id="rGrade">-</td></tr>
         </table>
@@ -452,6 +510,7 @@
       </aside>
     </div>
     <div class="bottom">
+      <div id="measurePanel" class="measurePanel" hidden></div>
       <div id="charts"></div>
       <!-- 設定で「コース図の位置: グラフの横」にしたとき、ここへコース図を移す(右端・グラフの最上段が起点) -->
       <div id="mapDock" class="mapDock" hidden>
@@ -469,7 +528,9 @@
 <script src="coursemap.js"></script>
 <script src="frictioncircle.js"></script>
 <script src="powercurve.js"></script>
+<script src="measure.js"></script>
 <script src="courseview3d.js"></script>
 <script src="app.js"></script>
+<script src="sessions.js"></script>
 </body>
 </html>

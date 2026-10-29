@@ -31,6 +31,10 @@ It currently supports Forza Horizon 6 (PC).
 - Assign the game's replay recorded after a race, or a separately recorded video (Game Bar, etc.), to a race, and switch between them
 - Performance mode (0.3.0+): RPM and how good each shift was (early / on time / late), the power curve and the friction circle, to see whether you are using the engine and tires fully
 - Friction circle (0.3.0+): the force the tires are putting out (lateral and longitudinal G) as a single dot. It changes color when slip is over the limit
+- Load transfer (0.4.0+): from suspension travel, see which side (front/rear, left/right) the load is on as a single dot and four wheel bars. It moves later than G, so you can see how you release the brake and how the car's attitude rocks
+- Measure mode (0.4.0+): combines the recordings of the same car to measure the power curve, gear ratios and the braking and cornering limits. Tells you what is missing and what to drive next to measure it
+- Recording list (0.4.0+): pick a recording by date, course and car. Recordings you no longer need can be moved, with their video, to `archive`
+- A race bar under the video, and graph controls like a video editor (drag to scroll) (0.4.0+)
 
 **Display**
 - Japanese and English (follows the Windows display language, or choose in Settings)

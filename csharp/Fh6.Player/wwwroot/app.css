@@ -69,6 +69,15 @@ main { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; 
 .top { display: flex; gap: 12px; }
 .videoBox { flex: 1; min-width: 0; }
 video { width: 100%; max-height: 52vh; background: #000; display: block; }
+/* 動画の下のレースの帯(動画の全体。レース = 色、レースの外 = 灰色、「前 / 次」で止まる所 = 白の印、今 = 黄色の線) */
+.raceBar { position: relative; height: 16px; margin-top: 8px; background: var(--line); border-radius: 3px; cursor: pointer; user-select: none; }
+.raceBar .rbRace { position: absolute; top: 3px; bottom: 3px; background: var(--accent); opacity: 0.55; border-radius: 2px; }
+.raceBar .rbRace.on { opacity: 1; top: 1px; bottom: 1px; }
+.raceBar .rbRace span { position: absolute; left: 3px; top: -1px; font-size: 10px; line-height: 12px; color: #0b1220; font-weight: 600; pointer-events: none; }
+/* 「前 / 次」で止まる所: 帯の上にはみ出す下向きの三角(スタートは大きく、周は小さく) */
+.raceBar .rbStop { position: absolute; top: -6px; width: 0; height: 0; margin-left: -5px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 8px solid var(--text); pointer-events: none; }
+.raceBar .rbStop.lap { top: -5px; margin-left: -3.5px; border-left-width: 3.5px; border-right-width: 3.5px; border-top-width: 6px; opacity: 0.7; }
+.raceBar .rbHead { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--pointer); pointer-events: none; }
 .videoError { color: var(--error); }
 
 .top { align-items: flex-start; }
@@ -135,6 +144,22 @@ label.check { display: inline-flex; align-items: center; gap: 4px; cursor: point
 .jobBar progress { width: 220px; }
 .settingsDlg .dlgFoot, .namesDlg .dlgFoot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .namesDlg p.error { color: var(--error); margin: 6px 0; }
+/* 記録の一覧 */
+.sessionsDlg { width: min(1200px, 96vw); min-height: 0; }
+.sessionsDlg .slRoot { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionsDlg .seg button.on { background: var(--accent); border-color: var(--accent); color: #0b1320; font-weight: 600; }
+.slFilter, .slRename { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.slFilter select { min-width: 220px; }
+.slTableBox { max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+.slTable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.slTable th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: normal; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.slTable td { padding: 3px 6px; border-bottom: 1px solid #ffffff10; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.slTable td.num { font-variant-numeric: tabular-nums; }
+.slTable tbody tr { cursor: default; }
+.slTable tbody tr:hover { background: #ffffff0d; }
+.slTable tbody tr.sel { background: #3d7eff33; }
+.slMsg { white-space: pre-line; margin: 6px 0; }
+.slMsg.error { color: var(--error); }
 .settingsDlg .dlgTabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 8px 0 4px; }
 .settingsDlg .dlgTabs button { border-radius: 4px 4px 0 0; border-bottom: none; padding: 6px 16px; }
 .settingsDlg .dlgTabs button.on { background: var(--accent); border-color: var(--accent); color: #0b1320; font-weight: 600; }
@@ -175,6 +200,35 @@ body:not(.perf) .perfOnly { display: none; }
 .pwBox { margin: 6px 0; }
 .pwHead { font-size: 12px; margin-bottom: 2px; }
 .pw { width: 100%; height: 140px; display: block; border: 1px solid var(--line); border-radius: 4px; }
+/* 計測モード: グラフの場所に、車のプロファイルの埋まり具合・限界・次の 1 本 */
+.measurePanel { flex: 1; min-width: 0; }
+/* 名前を付ける: 補助の設定の 3 つの選択は、それぞれ狭い幅で並べる(入らなければ折り返す) */
+.rnAssists { flex-wrap: wrap; gap: 6px 10px; }
+.rnAssists .optName { width: auto; min-width: 0; }
+.rnPair { display: inline-flex; align-items: center; gap: 8px; }
+.rnAssists select { flex: 0 0 auto; width: 7.5em; min-width: 0; }
+.mHead { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; margin-bottom: 8px; }
+.mHead b { font-size: 15px; }
+.mAssist { font-size: 12px; color: var(--muted); }
+.mGrid { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(360px, 1.6fr) minmax(260px, 1fr); gap: 10px; align-items: start; }
+.mBox { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-width: 0; }
+.mBox h3 { margin: 0 0 6px; font-size: 13px; }
+.mAdvice { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
+.mDone { color: #3cc68a; margin: 0; }
+.mFacts { margin: 0 0 6px; font-size: 12px; line-height: 1.6; }
+.mTableBox { overflow-x: auto; }
+.mTable { border-collapse: separate; border-spacing: 2px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.mTable th { color: var(--muted); font-weight: 400; padding: 0 3px; white-space: nowrap; text-align: right; }
+.mTable td { min-width: 30px; text-align: center; color: var(--text); }
+.mTable td.mBand { color: #0b1320; font-weight: 600; border-radius: 3px; }
+.mLegend { font-size: 11px; color: var(--muted); margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.mLegend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.mLimits { border-collapse: collapse; font-size: 12px; width: 100%; }
+.mLimits th, .mLimits td { border-top: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; }
+.mLimits th { color: var(--muted); font-weight: 400; white-space: nowrap; }
+.mShort { color: #ff9f43; }
+.mSmall { font-size: 11px; }
+@media (max-width: 1100px) { .mGrid { grid-template-columns: minmax(0, 1fr); } }
 .manual { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .manual:empty { display: none; }
 .manual .caption { color: var(--muted); margin-bottom: 4px; }

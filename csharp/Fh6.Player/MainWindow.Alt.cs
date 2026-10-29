@@ -90,6 +90,7 @@ public partial class MainWindow
         if (_replay == null || _replayKey != key)
         {
             _replay = _session!.ForReplay(race, _altPath, alt.Kind == VideoAlt.KindReplay ? _session.Fps : alt.File.Fps);
+            _replay.ApplyProfiles(_session.ProfileFiles);   // リプレイの性能モードも、車のプロファイルのカーブで
             _replayKey = key;
         }
         return _replay;

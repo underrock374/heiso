@@ -236,6 +236,24 @@ public static class RaceNames
         return edited is var (ec, es) ? (ec ?? car, es ?? setup) : (car, setup);
     }
 
+    /// <summary>
+    /// レースの補助の設定(docs/session-format.md「レースの補助の設定の決め方」): そのレースの race_edited のうち assists のある最後のもの。
+    /// 無ければ fallback(session.assists)。どちらも無ければ null。テレメトリーには出ないので、利用者が付けたものだけ
+    /// </summary>
+    public static Assists? Assists(IEnumerable<SessionEvent> events, double startRecvTime, Assists? fallback = null)
+    {
+        Assists? found = null;
+        foreach (var e in events)
+        {
+            if (e.Type != "race_edited" || e.Data == null) continue;
+            if (Num(e.Data["race_start_recv_time"]) is not double t || !Near(t, startRecvTime)) continue;
+            if (e.Data["assists"] is not System.Text.Json.Nodes.JsonObject a) continue;
+            found = new Assists { Abs = Str(a["abs"]), Tcs = Str(a["tcs"]), Stm = Str(a["stm"]), Lc = Str(a["lc"]), Shift = Str(a["shift"]) };
+        }
+        if (found != null) return found;
+        return fallback is { } f && (f.Abs != null || f.Tcs != null || f.Stm != null || f.Lc != null || f.Shift != null) ? fallback : null;
+    }
+
     private static bool Near(double a, double b) => Math.Abs(a - b) < SameRowSec;
 
     private static string? Str(System.Text.Json.Nodes.JsonNode? n) =>

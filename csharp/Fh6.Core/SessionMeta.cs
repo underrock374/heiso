@@ -167,6 +167,8 @@ public sealed class Assists
     public string? Stm { get; set; }
     public string? Line { get; set; }
     public string? Shift { get; set; }
+    /// <summary>ローンチコントロール(on / off。2026-10-17。race_edited の assists だけ)</summary>
+    public string? Lc { get; set; }
 }
 
 public sealed class SessionFiles

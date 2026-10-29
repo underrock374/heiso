@@ -55,6 +55,26 @@ public static class DerivedSeries
         return c;
     }
 
+    /// <summary>オーバー / アンダーとカウンターを出す最低速度(m/s。これより遅いと滑り角が揺れる)</summary>
+    public const double BalanceMinSpeed = 20 / 3.6;
+    /// <summary>カウンターとみなす最小の操舵(steer は −127〜127)と、車の回る速さ(rad/s。約 5°/s)</summary>
+    public const double CounterMinSteer = 3, CounterMinYawRate = 5 * Math.PI / 180;
+
+    /// <summary>
+    /// 前後のバランス: 後輪の滑り角 − 前輪の滑り角(左右の絶対値の平均。`tire_slip_angle_*` は 1.0 が限界)。
+    /// 正 = 後輪が先に滑っている(オーバーステア)、負 = 前輪が先(アンダーステア)。2026-10-24、20261023_012222 のスピンで確かめた
+    /// </summary>
+    public static double SlipBalance(double fl, double fr, double rl, double rr) =>
+        (Math.Abs(rl) + Math.Abs(rr)) / 2 - (Math.Abs(fl) + Math.Abs(fr)) / 2;
+
+    /// <summary>
+    /// カウンター: ハンドルの向きと、車の回る向き(`angular_velocity_y`)が逆。左コーナーは steer も回る向きも負、右は正。
+    /// 後ろが出て、曲がる向きと反対にハンドルを切っている所
+    /// </summary>
+    public static bool IsCounterSteer(double steer, double yawRate, double speedMps) =>
+        speedMps > BalanceMinSpeed && Math.Abs(steer) > CounterMinSteer && Math.Abs(yawRate) > CounterMinYawRate
+        && Math.Sign(steer) != Math.Sign(yawRate);
+
     public static SurfaceKind ClassifySurface(double rumble)
     {
         if (!double.IsFinite(rumble)) return SurfaceKind.Unknown;

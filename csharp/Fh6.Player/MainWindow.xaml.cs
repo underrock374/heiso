@@ -16,6 +16,13 @@ namespace Fh6.Player;
 public partial class MainWindow : Window
 {
     /// <summary>
+    /// 車のプロファイルの置き場所(計測モード。%LOCALAPPDATA%\HEISO\Player\profiles)。
+    /// 確認用の起動(tools/dev)では HEISO_PLAYER_PROFILES で別のフォルダにする(記録の写しを、利用者のプロファイルに足さないため)
+    /// </summary>
+    private static readonly ProfileStore Profiles = new(Environment.GetEnvironmentVariable("HEISO_PLAYER_PROFILES") is { Length: > 0 } dir ? dir
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "Player", "profiles"));
+
+    /// <summary>
     /// ウィンドウとメッセージの題名。v0 は 1 本の走りを見る「単走版」として公開する(2 本を並べる並走は v1 から)。
     /// exe 名(HeisoPlayer.exe)は版によらず変えない
     /// </summary>
@@ -256,7 +263,7 @@ public partial class MainWindow : Window
                 }
                 break;
             default:
-                OnAltMessage(type, msg);
+                if (!OnAltMessage(type, msg)) OnSessionsMessage(type, msg);
                 break;
         }
     }
@@ -377,6 +384,17 @@ public partial class MainWindow : Window
             }
             _session = await Task.Run(() => LoadedSession.Load(folder));
             ResetAlt();
+            // 計測モード: 車のプロファイルにこの記録を足す(作り直しが要る部分だけ)。書けなくても表示は続ける
+            var loaded = _session;
+            var swp = System.Diagnostics.Stopwatch.StartNew();
+            var profileError = await Task.Run(() =>
+            {
+                var e = loaded.UpdateProfiles(Profiles);
+                loaded.ApplyProfiles(loaded.ProfileFiles);   // 性能モードは、同じ車の記録を合わせたカーブで
+                return e;
+            });
+            if (profileError != null) PlayerLog.Error($"車のプロファイルを保存できない: {profileError}");
+            PlayerLog.Info($"車のプロファイル: {swp.ElapsedMilliseconds} ms({Profiles.Folder})");
             _packageFile = package;
             if (package != null)
             {
@@ -680,6 +698,8 @@ public partial class MainWindow : Window
             fps = view.Fps,
             series = map == null ? null : shown.BuildSeries(map),
             marks = map == null ? null : shown.BuildMarks(map),
+            // 計測モード(車のプロファイル)。リプレイを見ているときも、元の記録の車のもの
+            measure = s.BuildMeasure(),
         });
     }
 
@@ -799,6 +819,13 @@ public partial class MainWindow : Window
             ["car_ordinal"] = sig?.Ordinal, ["car_name"] = carName,
             ["setup_id"] = setupId == RegistryInbox.NewId ? null : setupId, ["setup_name"] = setupName,
         };
+        // 補助の設定(計測モード)。変えたときだけ画面から来る。値は on / off、変速は auto / manual、分からなければ null
+        if (msg.TryGetProperty("assists", out var asg) && asg.ValueKind == JsonValueKind.Object)
+        {
+            string? A(string k) => asg.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } x ? x : null;
+            data["assists"] = new System.Text.Json.Nodes.JsonObject { ["abs"] = A("abs"), ["tcs"] = A("tcs"), ["stm"] = A("stm"), ["lc"] = A("lc"), ["shift"] = A("shift") };
+            ((System.Text.Json.Nodes.JsonArray)data["changes"]!).Add("補助の設定");
+        }
         var ev = new SessionEvent
         {
             RecvTime = Math.Round(Clock.Now(), 6), Type = "race_edited",
@@ -840,6 +867,12 @@ public partial class MainWindow : Window
             registryNote = Strings.T("登録には回せませんでした: {message}", ("message", ex.Message));
         }
         PlayerLog.Info($"レース {raceIndex + 1} の名前: {ev.Detail}");
+        // 補助の設定を変えたら、プロファイルの部分の設定も付け直す(csv は同じなので、設定だけ)
+        if (data.ContainsKey("assists"))
+        {
+            var profileError = s.UpdateProfiles(Profiles);
+            if (profileError != null) PlayerLog.Error($"車のプロファイルを保存できない: {profileError}");
+        }
         SendSession(keepVideo: true);
         Toast(message: Strings.T("名前を保存しました。{note}", ("note", registryNote)), sec: 6);
     }
