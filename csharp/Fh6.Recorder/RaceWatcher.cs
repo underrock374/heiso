@@ -169,7 +169,7 @@ public sealed class RaceWatcher
 
         // 同じ車両の未確定のカードは作り直す(別の車両のカードは、確定するまで残す)
         _prompts.RemoveAll(p => p is CarPrompt cp && cp.Car == sig);
-        _prompts.Add(new CarPrompt(NextId(), NowText(), sig, changed, name,
+        _prompts.Add(new CarPrompt(NextId(), NowText(), sig, changed,
             setups.Select(s => new SetupChoice(s.Id, s.Name, s.Variant)).ToList(), setup?.Id));
 
         Write(recv, "car_detected", $"{name ?? "未登録の車両"} {sig}({string.Join("・", changed)})", new JsonObject
@@ -331,9 +331,7 @@ public sealed class RaceWatcher
     };
 
     /// <summary>速度(今の単位)</summary>
-    private string SpeedText(double kmh) => _speedUnit == "mph"
-        ? $"{(kmh / 1.609344).ToString("0", System.Globalization.CultureInfo.InvariantCulture)} mph"
-        : $"{kmh.ToString("0", System.Globalization.CultureInfo.InvariantCulture)} km/h";
+    private string SpeedText(double kmh) => DisplayUnits.SpeedText(kmh, _speedUnit);
 
     // ---------------------------------------------------------------- 画面から
 
@@ -532,85 +530,70 @@ public sealed class RaceWatcher
 
     // ---------------------------------------------------------------- 状態
 
-    public object Snapshot()
+    public RaceStatus Snapshot()
     {
         MergeInbox();
         lock (_lock)
         {
-            object? car = null;
+            RaceCar? car = null;
             if (_tracker.Car is CarSignature sig)
             {
                 var st = _setupId != null ? Reg.SetupById(_setupId) : null;
-                car = new
-                {
-                    ordinal = sig.Ordinal, cls = sig.ClassName, pi = sig.Pi, drive = sig.DrivetrainName, cyl = sig.Cylinders,
-                    name = Reg.CarName(sig.Ordinal), setup = st?.Name,
-                    confirmed = st != null && !_prompts.Any(p => p is CarPrompt cp && cp.Car == sig),
-                };
+                car = new RaceCar(sig.Ordinal, sig.ClassName, sig.Pi, sig.DrivetrainName, sig.Cylinders,
+                    Name: Reg.CarName(sig.Ordinal), Setup: st?.Name,
+                    Confirmed: st != null && !_prompts.Any(p => p is CarPrompt cp && cp.Car == sig));
             }
             var course = _courseId != null ? Reg.CourseById(_courseId) : null;
-            return new
-            {
-                car,
-                course = course == null ? null : new { id = course.Id, name = course.Name, kind = course.Kind },
-                inRace = _tracker.InRace,
-                prompts = _prompts.Select(p => p switch
+            return new RaceStatus(
+                Car: car,
+                Course: CourseRefOf(course),
+                InRace: _tracker.InRace,
+                Prompts: _prompts.Select(p => p switch
                 {
-                    CarPrompt c => (object)new
-                    {
-                        id = c.Id, type = "car", created = c.Created,
-                        sig = new { ordinal = c.Car.Ordinal, cls = c.Car.ClassName, pi = c.Car.Pi, drive = c.Car.DrivetrainName, cyl = c.Car.Cylinders },
-                        // changed は今の言語の名前。atStart = 記録を始めたときの車両(変わったのではない)
-                        changed = c.Changed.Select(ChangeName).ToList(), atStart = c.Changed.Contains("記録開始時の車両"), knownName = c.KnownName,
-                        setups = c.Setups.Select(s => new { id = s.Id, name = s.Name, variant = s.Variant }),
-                        guessSetup = c.GuessSetup,
-                    },
-                    CoursePrompt c => new
-                    {
-                        id = c.Id, type = "course", created = c.Created,
-                        start = new { x = c.X, z = c.Z, yaw = c.Yaw },
-                    },
-                    _ => new { id = p.Id, type = "unknown", created = p.Created },
+                    CarPrompt c => (RacePrompt)new CarPromptStatus(c.Id, "car", c.Created,
+                        new CarSig(c.Car.Ordinal, c.Car.ClassName, c.Car.Pi, c.Car.DrivetrainName, c.Car.Cylinders),
+                        Changed: c.Changed.Select(ChangeName).ToList(), AtStart: c.Changed.Contains("記録開始時の車両"),
+                        KnownName: Reg.CarName(c.Car.Ordinal),
+                        Setups: c.Setups.Select(s => new SetupOption(s.Id, s.Name, s.Variant)).ToList(),
+                        GuessSetup: c.GuessSetup),
+                    CoursePrompt c => new CoursePromptStatus(c.Id, "course", c.Created, new StartPoint(c.X, c.Z, c.Yaw)),
+                    _ => new UnknownPromptStatus(p.Id, "unknown", p.Created),
                 }).ToList(),
-                known = new
-                {
-                    cars = Reg.Cars.Values.Select(c => c.Name).Distinct().Order().ToList(),
-                    courses = Reg.Courses.Select(c => new { id = c.Id, name = c.Name, kind = c.Kind, seen = c.Seen ?? 0 }).ToList(),
-                },
-                kinds = CourseKindNames(),
-                lastRace = LastRaceSnapshot(),
-                recent = _recent.AsEnumerable().Reverse().Select(r => new { at = r.At, text = r.Text }).ToList(),
-                registryWarning = _registryWarning,
-            };
+                Known: new KnownNames(
+                    Reg.Cars.Values.Select(c => c.Name).Distinct().Order().ToList(),
+                    Reg.Courses.Select(c => new KnownCourse(c.Id, c.Name, c.Kind, c.Seen ?? 0)).ToList()),
+                Kinds: CourseKindNames(),
+                LastRace: LastRaceSnapshot(),
+                Recent: _recent.AsEnumerable().Reverse().Select(r => new RecentLine(r.At, r.Text)).ToList(),
+                RegistryWarning: _registryWarning);
         }
     }
 
-    private object? LastRaceSnapshot()
+    private static CourseRef? CourseRefOf(RegisteredCourse? c) => c == null ? null : new CourseRef(c.Id, c.Name, c.Kind);
+
+    private LastRaceStatus? LastRaceSnapshot()
     {
         var r = _lastRace;
         if (r == null) return null;
         var c = r.CourseId != null ? Reg.CourseById(r.CourseId) : null;
         var st = r.SetupId != null ? Reg.SetupById(r.SetupId) : null;
-        return new
-        {
-            startedAt = r.StartedAt,
-            ended = r.EndRecv != null,
-            recorded = r.Recorded ? Path.GetFileName(r.Folder ?? "") : null,
-            course = c == null ? null : new { id = c.Id, name = c.Name, kind = c.Kind },
-            car = r.Car is CarSignature sig ? new
-            {
-                ordinal = sig.Ordinal, cls = sig.ClassName, pi = sig.Pi, drive = sig.DrivetrainName, cyl = sig.Cylinders,
-                name = Reg.CarName(sig.Ordinal), setupId = st?.Id, setup = st?.Name,
-                setups = Reg.FindSetups(sig).Select(s => new { id = s.Id, name = s.Name }).ToList(),
-            } : null,
-        };
+        return new LastRaceStatus(
+            StartedAt: r.StartedAt,
+            Ended: r.EndRecv != null,
+            Recorded: r.Recorded ? Path.GetFileName(r.Folder ?? "") : null,
+            Course: CourseRefOf(c),
+            Car: r.Car is CarSignature sig
+                ? new LastRaceCar(sig.Ordinal, sig.ClassName, sig.Pi, sig.DrivetrainName, sig.Cylinders,
+                    Name: Reg.CarName(sig.Ordinal), SetupId: st?.Id, Setup: st?.Name,
+                    Setups: Reg.FindSetups(sig).Select(s => new SetupRef(s.Id, s.Name)).ToList())
+                : null);
     }
 
     private string NextId() => $"P{++_seq:D4}";
     private static string NowText() => DateTime.Now.ToString("HH:mm");
 
     private abstract record Prompt(string Id, string Created);
-    private sealed record CarPrompt(string Id, string Created, CarSignature Car, List<string> Changed, string? KnownName,
+    private sealed record CarPrompt(string Id, string Created, CarSignature Car, List<string> Changed,
                                     List<SetupChoice> Setups, string? GuessSetup) : Prompt(Id, Created);
     private sealed record CoursePrompt(string Id, string Created, double X, double Z, double Yaw, double RaceStartRecvTime) : Prompt(Id, Created);
     private sealed record SetupChoice(string Id, string Name, int Variant);

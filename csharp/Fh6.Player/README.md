@@ -61,8 +61,8 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 ## 表示の単位(メートル / マイル)
 
 設定の「画面」タブの「単位」で、速度(km/h・mph)、距離(m・km / ft・mi)、標高(m / ft)をそれぞれ選ぶ(2026-09-29)。
-「自動」は、Windows の地域が米国か英国ならマイル、それ以外はメートル(地域は C# が `window.HEISO_I18N.region` で渡す。
-.NET の `RegionInfo.IsMetric` は英国をメートル法とするので、国の名前で決める)。
+「自動」は、Windows の地域が米国か英国ならマイル、それ以外はメートル(決めるのは C# の `Fh6.Core` の `DisplayUnits` で、記録アプリと共通。
+画面へは `window.HEISO_SETTINGS.autoImperial` で渡す。.NET の `RegionInfo.IsMetric` は英国をメートル法とするので、国の名前で決める)。
 
 - 変わるのは表示だけ。記録のデータとパッケージの形式はメートル法のまま(`units.js` が画面に出すときに直す)
 - 速度: グラフの速度の段、読み取り値、接触とジャンプの印の説明、レースの一覧の「終えた瞬間」
@@ -72,7 +72,7 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 
 ## 設定のダイアログ
 
-上の欄の「設定」で開く。この PC の再生アプリ全体の設定で、どの記録を開いても同じ設定で表示する(変えるとすぐ反映。WebView2 の保存領域 `%LOCALAPPDATA%\HEISO\Player\WebView2` に保存)。
+上の欄の「設定」で開く。この PC の再生アプリ全体の設定で、どの記録を開いても同じ設定で表示する(変えるとすぐ反映。`%LOCALAPPDATA%\HEISO\Player\player.json` の `View` に保存。グラフの段の組み合わせと、同期の微調整の小窓の位置も同じ所。前の版が WebView2 の保存領域に置いていた設定は、この版を初めて開いたときに引き継ぐ)。
 
 上のタブでページを分けている(2026-09-28)。最後に開いていたタブを覚えて、次もそこから開く。
 
@@ -251,11 +251,11 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 記録を開いたとき `LoadedSession.UpdateProfiles` が、車ごと・レースごとの部分(`Fh6.Core/CarProfile.cs` の `ProfilePartBuilder`)を作ってプロファイルに足す
 (csv が変わっていなければ作り直さない。補助の設定だけ変わったら付け直す。リプレイの仮想セッションと、時刻を振り直したパッケージは足さない)。
 `BuildMeasure` が、車ごとの値と、補助の設定の組ごとの限界・次の 1 本の指示(`MeasurementEvaluator`)を渡す。指示の文は画面で作る。
-置き場所は `%LOCALAPPDATA%\HEISO\Player\profiles`。確認用の起動(`tools/dev/start-player.ps1`)は `HEISO_PLAYER_PROFILES` で一時フォルダにする。仕様は `docs/spec.md`「計測モード」、形式は `docs/session-format.md`「車のプロファイル」
+置き場所は `%LOCALAPPDATA%\HEISO\Player\profiles`。確認用の起動(`tools/dev/start-player.ps1`)は `HEISO_PLAYER_DATA_DIR` で一時フォルダにする。仕様は `docs/spec.md`「計測モード」、形式は `docs/session-format.md`「車のプロファイル」
 
 ### 性能モード
 
-上の帯の「見える化 / 性能」(`settings.viewMode`)で切り替える。グラフの段の組み合わせ(`graphs.js` の `PERF_PRESETS`、保存は `heiso.graphLayout.perf.v1`)と、コース図の場所に出すもの(`settings.mapModePerf`)は、見える化とは別に覚える。
+上の帯の「見える化 / 性能」(`settings.viewMode`)で切り替える。グラフの段の組み合わせ(`graphseries.js` の `PERF_PRESETS`、保存は `player.json` の `View.Layouts.Perf`)と、コース図の場所に出すもの(`settings.mapModePerf`)は、見える化とは別に覚える。
 性能モードだけの部品は `.perfOnly`(`body.perf` のときだけ出す)。
 
 - 計算は C# の `Fh6.Core/PowerAnalysis.cs`(パワーカーブ・ギア比・リミッター・最適な変速回転数と最適な範囲・変速の得失・全開のシフトアップ・自動変速の見分け。単体テストあり)。車は車種と PI の組で分ける
@@ -333,6 +333,14 @@ WPF + WebView2、.NET 10。画面(動画・グラフ・操作)は `wwwroot` の 
 2026-09-27〜28 の 8 回は、この手順で原因が分かった(WebView2 のメッセージの処理の中でフォルダを選ぶ画面を開いていた。PR #25 で修正)。
 
 ## 作りの注意
+
+- 構造は `docs/architecture.md` に従う。C# の `Fh6.Player.App`(ViewModel)が状態と判断を持ち、画面の JS(`wwwroot`)は届いた配列を描いて、操作をメッセージで C# に伝える。
+  メッセージの型は `ViewMessages.cs`(画面 → C#)と `HostMessages.cs`(C# → 画面)で、JS の型定義 `messages.d.ts` はそこから作る
+- 画面の JS は部分ごとのファイルに分けてあり、全部が 1 つの大域を共有する(`index.html` の読み込み順)。
+  大きさの変化の見張り(`ResizeObserver`)は、最後に読み込む `dialogs.js` の終わりで始める(読み込みの途中で描くと、まだ無い関数を呼ぶため)
+- 画面の設定は `player.json` の `View`(型は `ViewSettings`)。ページの読み込みより前に `window.HEISO_SETTINGS` として渡し、画面は変えたら丸ごと送り返す
+- 記録ごとに最後に表示していた割り当てた動画は `player.json` の `LastVideos`(記録を始めた日時 → 動画の id。新しい順に 200 件まで)。
+  開くときに `VideoViewModel` がその動画を選び、記録の外のフォルダなら外枠がページを読み込む前に `alt.heiso` に割り当てる。使えなければ録画で開く(知らせない)
 
 - セッションフォルダは仮想ホスト `https://session.heiso/`(フォルダの外にある動画は `https://video.heiso/`)に割り当てて `<video>` で読む。
   割り当ては読み込み済みのページには効かない(動画が「対応していない形式」のエラーになる)ので、セッションを開くたびにページを読み直している

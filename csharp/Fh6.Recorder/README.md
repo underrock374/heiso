@@ -177,6 +177,12 @@ OBS の「基本」モードではキーフレーム間隔を決められず、�
 記録済みのセッションは `HeisoRecorder --resync <セッションフォルダ>` で、動画の長さ・フレームレートと終端の検算を書き足せる
 (元の session.json は session.json.bak に残す)。
 
+## 作りの注意
+
+- 画面は `wwwroot/index.html` と `recorder.js`。状態は `/api/status` から読み、操作は `/api/*` に送る。
+  やりとりの型は `ApiTypes.cs` で、JS の型定義 `api.d.ts` はそこから作る(`Fh6.Recorder.Tests` の `ApiTypesTests`)
+- 速度の単位の「自動」と速度の文字は、再生アプリと共通の `Fh6.Core` の `DisplayUnits` で決めて書く(画面は `speedText` をそのまま出す)
+
 ## 注意
 
 - 生パケット(`telemetry.raw.gz`)も残しているので、列名や読み方を直したときは CSV を後から作り直せる

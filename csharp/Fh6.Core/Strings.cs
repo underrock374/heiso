@@ -43,6 +43,9 @@ public static partial class Strings
         return JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(s) ?? new();
     }
 
+    /// <summary>画面へ渡す、今の言語の辞書(window.HEISO_I18N。記録アプリと再生アプリで共通)</summary>
+    public static I18nData PageData() => new(Language, Dictionary(Language));
+
     /// <summary>ある言語の辞書(鍵 → 訳)。日本語なら空(鍵がそのまま日本語の文なので)。画面へ渡す用</summary>
     public static Dictionary<string, string> Dictionary(string language)
     {
@@ -90,3 +93,6 @@ public static partial class Strings
     public static IEnumerable<string> PlaceholderNames(string text) =>
         Placeholder().Matches(text).Select(m => m.Groups[1].Value).Distinct().Order();
 }
+
+/// <summary>画面の言語の辞書。ページの読み込みより前に window.HEISO_I18N として渡し、i18n/i18n.js が読む</summary>
+public sealed record I18nData(string Lang, Dictionary<string, string> Strings);

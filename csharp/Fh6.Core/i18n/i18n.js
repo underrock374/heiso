@@ -1,5 +1,5 @@
 // 画面の言語(HEISO)。訳は csharp/Fh6.Core/i18n/strings.json の 1 ファイルだけにあり、各アプリがページの読み込みより前に
-// window.HEISO_I18N = { lang: "ja" | "en", strings: { 日本語の文: 訳 }, region: Windows の地域(再生アプリの単位の自動に使う) } として渡す(Fh6.Core の Strings.Dictionary)。
+// window.HEISO_I18N = { lang: "ja" | "en", strings: { 日本語の文: 訳 } } として渡す(Fh6.Core の Strings.PageData)。
 // このファイルも Core にだけ置き、ビルドのときに各アプリの画面のフォルダへ出す。
 //
 // - t(日本語の文, { 名前: 値 }): 今の言語の文(日本語の文は、ふつうの "…" の文字列でそのまま書く。訳し漏れのテストが拾えるように)。辞書に無ければ日本語のまま。{名前} に値を、{名前:F1} なら小数 1 桁で差し込む

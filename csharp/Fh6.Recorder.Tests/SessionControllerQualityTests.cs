@@ -78,7 +78,7 @@ public sealed class SessionControllerQualityTests : IAsyncDisposable
         Assert.Equal("HEISO 最小", (string)saved["video"]!["quality"]!["profile"]!);
 
         // 選んだ段階は次の記録のために覚えている
-        var status = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(controller.GetStatus()))!;
+        var status = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(controller.GetStatus(), System.Text.Json.JsonSerializerOptions.Web))!;
         Assert.Equal("minimum", (string)status["quality"]!["selected"]!);
     }
 

@@ -21,6 +21,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- C# の型から JS の型定義を書く(再生アプリと記録アプリのテストで共通) -->
+    <Compile Include="..\TestTools\TypeScriptWriter.cs" Link="TestTools\TypeScriptWriter.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 記録の停止後に長さを読む録画ファイルの代わり -->
     <None Include="..\..\testdata\video\normal.mp4" Link="testdata\video\normal.mp4" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

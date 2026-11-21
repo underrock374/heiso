@@ -7,7 +7,7 @@ namespace Fh6.Player;
 /// <summary>
 /// 再生アプリの設定(%LOCALAPPDATA%\HEISO\Player\player.json)。
 /// 「セッションフォルダを開く」で最初に出すフォルダ(前回開いた記録の 1 つ上 = 記録アプリの保存先)と、ウィンドウの大きさと位置。
-/// 画面の設定(印・再生・グラフなど)は WebView2 の保存領域にある(wwwroot/app.js)。ウィンドウは WPF の部品なのでここに持つ。
+/// 画面の設定(印・再生・グラフなど)は View(ViewSettings)。ウィンドウは WPF の部品なのでここに持つ。
 /// </summary>
 public sealed class PlayerSettings
 {
@@ -51,6 +51,35 @@ public sealed class PlayerSettings
     public double ReplayDefaultShiftSec(double? fps) =>
         Math.Round(-(ReplayLeadFrames ?? DefaultReplayLeadFrames) / (fps is double f && f > 0 ? f : 30), 4);
 
+    /// <summary>画面の設定(ViewSettings)。null ならまだ保存が無い(前の版は画面の localStorage に置いていた。画面が一度だけ引き継いで送る)</summary>
+    public ViewSettings? View { get; set; }
+
+    /// <summary>
+    /// 記録ごとに、最後に表示していた割り当てた動画(新しい順、LastVideosMax 件まで)。録画を表示していた記録は載せない。
+    /// 開いたときにその動画を表示する(spec「開き直したときの表示と、割り当て済みのリプレイ」の A)。見るための状態なので、session.json には書かない
+    /// </summary>
+    public List<LastVideo>? LastVideos { get; set; }
+
+    public const int LastVideosMax = 200;
+
+    /// <summary>その記録で最後に表示していた割り当てた動画の id(録画だったか、覚えていなければ null)</summary>
+    public string? LastVideoOf(string session) => LastVideos?.FirstOrDefault(v => v.Session == session)?.Id;
+
+    /// <summary>その記録で表示している動画を覚えて保存する(id が null なら録画。忘れる)。変わらなければ保存しない</summary>
+    public void SetLastVideo(string session, string? id)
+    {
+        var list = LastVideos ??= [];
+        int i = list.FindIndex(v => v.Session == session);
+        if (id == null ? i < 0 : i == 0 && list[0].Id == id) return;
+        if (i >= 0) list.RemoveAt(i);
+        if (id != null)
+        {
+            list.Insert(0, new LastVideo(session, id));
+            if (list.Count > LastVideosMax) list.RemoveRange(LastVideosMax, list.Count - LastVideosMax);
+        }
+        Save();
+    }
+
     /// <summary>ウィンドウの大きさと位置を覚えるか(画面の設定のダイアログで切り替える)</summary>
     public bool RememberWindow { get; set; }
 
@@ -67,18 +96,23 @@ public sealed class PlayerSettings
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "Player", "player.json");
+    public static string DefaultPath => PlayerPaths.SettingsFile;
 
     public static PlayerSettings Load(string? path = null)
     {
-        try { return JsonSerializer.Deserialize<PlayerSettings>(File.ReadAllText(path ?? DefaultPath)) ?? new(); }
-        catch { return new(); }
+        PlayerSettings s;
+        try { s = JsonSerializer.Deserialize<PlayerSettings>(File.ReadAllText(path ?? DefaultPath)) ?? new(); }
+        catch { s = new(); }
+        s._path = path;
+        return s;
     }
+
+    /// <summary>読んだファイル(Save で書く先)。null なら DefaultPath</summary>
+    private string? _path;
 
     public void Save(string? path = null)
     {
-        path ??= DefaultPath;
+        path ??= _path ?? DefaultPath;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -117,6 +151,12 @@ public sealed class PlayerSettings
         Save();
     }
 }
+
+/// <summary>
+/// 記録で最後に表示していた割り当てた動画。Session は記録を始めた日時(フォルダ名の頭。yyyyMMdd_HHmmss)で、
+/// アーカイブへ移しても、フォルダ名のメモを変えても同じ記録とみなす
+/// </summary>
+public sealed record LastVideo(string Session, string Id);
 
 /// <summary>ウィンドウの位置と大きさ(最大化していたときは、元に戻したときの位置と大きさ)</summary>
 public sealed class WindowPlacement

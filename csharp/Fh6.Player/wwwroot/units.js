@@ -1,22 +1,20 @@
 // 表示の単位(速度・距離・標高)。記録のデータはメートル法(速度 km/h、距離と標高 m)のまま持ち、画面に出すときだけ直す。
 // 設定の「画面」→「単位」で、それぞれ 自動 / メートル / マイル を選ぶ。自動は、Windows の地域が米国か英国ならマイル、それ以外はメートル
-// (地域は C# が window.HEISO_I18N.region で渡す。.NET の RegionInfo.IsMetric は英国をメートル法とするので、国の名前で決める)。
+// (決めるのは C#。記録アプリと共通の Fh6.Core の DisplayUnits で、window.HEISO_SETTINGS.autoImperial で届く)。
 "use strict";
 
 const MI_M = 1609.344;
 const FT_M = 0.3048;
 const KMH_PER_MPH = 1.609344;
-const IMPERIAL_REGIONS = ["US", "GB"];
 
 const Units = {
   speed: "kmh",   // "kmh" / "mph"
   dist: "m",      // "m"(m・km)/ "ft"(ft・mi)
   elev: "m",      // "m" / "ft"
 
-  /** 自動のときの単位がマイルか(Windows の地域が米国か英国) */
+  /** 自動のときの単位がマイルか(C# が Windows の地域で決める) */
   autoImperial() {
-    const region = ((window.HEISO_I18N || {}).region || "").toUpperCase();
-    return IMPERIAL_REGIONS.includes(region);
+    return (window.HEISO_SETTINGS || {}).autoImperial === true;
   },
 
   /** 設定(unitSpeed / unitDist / unitElev: "auto" か単位)から、今使う単位を決める */

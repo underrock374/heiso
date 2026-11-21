@@ -2,6 +2,8 @@
 // 横軸 = 横 G(右が正)、縦軸 = 前後 G(上 = 加速、下 = ブレーキ)。系列の gLat・gLong は C# の LoadedSession.BuildSeries が、
 // FH6 のデータ出力の acceleration_x(横。+ = 右)・acceleration_z(前後。+ = 前)を G に直したもの(車体座標)。
 //
+// 点の位置・円・表示の上限・点群に出す行は、C# の FrictionDynamic が、選んでいるレースとならしの幅で作って HostFriction で送る
+// (幅かレースを変えたときに app.js が ViewFriction で頼む)。ここでは、それをキャンバスのどこに描くかだけを決める。
 // 円(グリップの目安)は、選んでいるレース(「全体」なら記録全体)の中で、その路面で出た合成加速度の上位 2% の大きさ。
 // 車の限界そのものではなく、その走りで実際に使えた大きさ(複数の車を含む記録は、レースを選ぶと車ごとに合う)。
 //   - 舗装(ジャンプ台・縁石を含む)の円を最大として、いつも薄く残す
@@ -18,249 +20,27 @@
 //   円のまわりに、4 輪それぞれのサスペンションの伸びを棒で出す(前後・左右の差だけでは、対角の 1 輪だけが浮くのが見えないため)。
 "use strict";
 
-const GG_PAVED = new Set([0, 3, 7]);      // 舗装・ジャンプ台(0.20)・縁石(0.24)。路面の逸脱の判定(SurfaceExcursionDetector)と同じ扱い
-const GG_MIN_KMH = 20;                    // 円の推定に使う行の最低速度(止まっている間の揺れとグリッドの発進を除く)
-const GG_CLOUD_KMH = 5;                   // 点群に出す行の最低速度
-const GG_RING_MIN_ROWS = 150;             // 円を作るのに要る行数(30fps で 5 秒ぶん)
-const GG_RING_PERCENTILE = 0.98;
-const GG_SANE_G = 6;                      // これを超える加速度は、接触・着地・復帰のはね上がり(上限は 20G)。推定にも点群にも使わない
-const GG_CAP_RATIO = 1.3;                 // 表示の上限 = 最大の円の何倍か
-const GG_DEFAULT_MAX = 1.5;               // 円を作れなかったときの表示の上限(G)
-const GG_AFTER_JUMP_SEC = 0.5;            // 着地の後に除く時間
-const GG_CONTACT_SEC = 0.3;               // 接触の前後に除く時間
 const GG_RING_COLOR = { 0: "#cfd6e4", 1: "#e8f1ff", 2: "#d99a52", 4: "#5fc470" };   // 舗装・雪など・ダート・芝(graphs.js の SURFACE の番号)
 const GG_SLIP_COLOR = "#ff9f43";
 const GG_LIMIT_COLOR = "#3cc68a";            // この車の限界(計測モードのプロファイル)
-const GG_LIMIT_SURFACE = { 0: "paved", 1: "snow", 2: "dirt", 4: "grass" };   // 路面の番号(ggSurfaceGroup)→ プロファイルの路面のキー
+const GG_LIMIT_SURFACE = { 0: "paved", 1: "snow", 2: "dirt", 4: "grass" };   // 路面の番号(C# の FrictionStatic.SurfaceGroups)→ プロファイルの路面のキー
 const GG_NORMAL_COLOR = "#6cb2ff";
-const LT_SMOOTH_SEC = 0.25;                // 縮みの差をならす幅の既定(前後この秒数。近い行ほど重い三角の重み。中心に置くので遅れない)。画面の「ならし」で変える
+const GG_EMPTY_SCALE = { gg: 1.5, load: 0.4 };   // 記録が無い・C# からまだ届いていないときの目盛りの上限(G・縮みの差。C# の DefaultMaxG・DefaultMaxLoad と同じ)
 const GG_DOT_R = 7.5;                      // 今の点の半径(px。荷重移動・摩擦円とも。ならす幅によらない)
-const LT_AIR = 0.03;                      // どれかの車輪がこれ未満なら伸び切り(空中。AirDetector と同じ境目)。荷重移動に使わない
-const LT_CALM_G = 0.1;                    // 基準に使う行: 前後・横とも、この G 未満
-const LT_CALM_KMH = 40;                   // 同じく、この速度以上
-const LT_MIN_CALM = 60;                   // 基準を作るのに要る行数(足りなければ基準 0)
-const LT_SANE = 1;                        // 縮みの差はこれより大きくならない
-const LT_DEFAULT_MAX = 0.4;               // 円を作れなかったときの表示の上限(縮みの差)
 const LT_WHEELS = ["fl", "fr", "rl", "rr"];
-const LT_LIGHT = 0.05;                    // 4 輪の棒: この縮み未満は「浮きかけ」(赤)
-const LT_BOTTOM = 0.95;                   // 同じく、これを超えたら「縮み切りに近い」(橙。底突きの判定は 0.98)
 const LT_LIGHT_COLOR = "#ff6b6b";
-
-/**
- * i 行目の [横 G, 前後 G]。sec が 0 なら前後 3 行の平均(フレームごとの揺れを軽くならす)、
- * sec > 0 なら前後 sec 秒の重み付き平均(荷重移動と同じ三角の重み。画面の「ならし」)。値が無ければ null
- */
-function ggAt(data, i, sec = 0) {
-  const lat = data.gLat, lon = data.gLong, t = data.t;
-  if (lat[i] == null || lon[i] == null) return null;
-  let a = lat[i], b = lon[i], n = 1;
-  if (!(sec > 0)) {
-    for (const j of [i - 1, i + 1]) {
-      if (j < 0 || j >= t.length || lat[j] == null || lon[j] == null) continue;
-      if (Math.abs(t[j] - t[i]) > 0.1) continue;
-      a += lat[j]; b += lon[j]; n++;
-    }
-    return [a / n, b / n];
-  }
-  for (const dir of [-1, 1]) {
-    for (let j = i + dir; j >= 0 && j < t.length; j += dir) {
-      const dt = Math.abs(t[j] - t[i]);
-      if (dt >= sec || lat[j] == null || lon[j] == null) break;
-      const k = 1 - dt / sec;
-      a += lat[j] * k; b += lon[j] * k; n += k;
-    }
-  }
-  return [a / n, b / n];
-}
-
-/**
- * i 行目の前後 sec 秒の重み付き平均の、縮みの差 [右 − 左, 前 − 後ろ](基準は引かない。段差やばねの細かい揺れをならす)。
- * 値が無いか、どれかの車輪が伸び切り(空中)なら null
- */
-function ltRaw(data, i, sec = LT_SMOOTH_SEC) {
-  const s = data.susp, t = data.t;
-  if (!s) return null;
-  const at = (j) => {
-    const fl = s.fl[j], fr = s.fr[j], rl = s.rl[j], rr = s.rr[j];
-    if (fl == null || fr == null || rl == null || rr == null || Math.min(fl, fr, rl, rr) < LT_AIR) return null;
-    return [(fr + rr - fl - rl) / 2, (fl + fr - rl - rr) / 2];
-  };
-  const v = at(i);
-  if (!v) return null;
-  let x = v[0], y = v[1], n = 1;
-  for (const dir of [-1, 1]) {
-    for (let j = i + dir; j >= 0 && j < t.length; j += dir) {
-      const dt = Math.abs(t[j] - t[i]);
-      if (dt >= sec) break;
-      const w = at(j);
-      if (!w) break;   // 空中の行から先はまたがない(着地の前後を混ぜない)
-      const k = 1 - dt / sec;
-      x += w[0] * k; y += w[1] * k; n += k;
-    }
-  }
-  return [x / n, y / n];
-}
-
-/**
- * i 行目の 4 輪の縮み { fl, fr, rl, rr }(ならさない。読み取り値に使う。伸び切りの行も含める)。
- * 値が無ければ null
- */
-function ltWheels(data, i) {
-  const s = data.susp;
-  if (!s || LT_WHEELS.some((w) => s[w][i] == null)) return null;
-  return { fl: s.fl[i], fr: s.fr[i], rl: s.rl[i], rr: s.rr[i] };
-}
-
-/**
- * i 行目の 4 輪の縮みを、前後 sec 秒でならしたもの(4 輪の棒)。
- * 戻り値 { avg(三角の重みの平均), lo(幅の中でいちばん伸びた値), hi(いちばん縮んだ値) }。それぞれ { fl, fr, rl, rr }。
- * lo・hi はならさない記録の値(着地の一瞬の縮み切りや、浮いた車輪を、ならした棒が低く出ても印で残すため)。
- * 伸び切りの行もまたいでならす(浮いた車輪の棒も出すため)。i 行目の値が無ければ null
- */
-function ltWheelsSmooth(data, i, sec = LT_SMOOTH_SEC) {
-  const v = ltWheels(data, i);
-  if (!v) return null;
-  const s = data.susp, t = data.t, avg = {}, lo = {}, hi = {}, sum = {};
-  let n = 1;
-  for (const w of LT_WHEELS) { sum[w] = v[w]; lo[w] = v[w]; hi[w] = v[w]; }
-  for (const dir of [-1, 1]) {
-    for (let j = i + dir; j >= 0 && j < t.length; j += dir) {
-      const dt = Math.abs(t[j] - t[i]);
-      if (dt >= sec || LT_WHEELS.some((w) => s[w][j] == null)) break;
-      const k = 1 - dt / sec;
-      for (const w of LT_WHEELS) {
-        const x = s[w][j];
-        sum[w] += x * k;
-        if (x < lo[w]) lo[w] = x;
-        if (x > hi[w]) hi[w] = x;
-      }
-      n += k;
-    }
-  }
-  for (const w of LT_WHEELS) avg[w] = sum[w] / n;
-  return { avg, lo, hi };
-}
-
-/**
- * 荷重移動の基準: 選んでいる行のうち、まっすぐ一定の速さ(前後・横とも 0.1G 未満、40 km/h 以上)で走っている行の、縮みの差の中央値。
- * 戻り値 { x, y, n(使った行数), wheels(4 輪それぞれの縮みの中央値 { fl, fr, rl, rr }。4 輪の棒の目盛り) }。
- * 行が足りなければ x・y は 0、wheels は null
- */
-function ltBaseline(data, rows, mask, sec = LT_SMOOTH_SEC) {
-  const xs = [], ys = [], ws = { fl: [], fr: [], rl: [], rr: [] };
-  for (const i of rows) {
-    if (mask && mask[i]) continue;
-    if (data.speed[i] == null || data.speed[i] < LT_CALM_KMH) continue;
-    const g = ggAt(data, i);
-    if (!g || Math.abs(g[0]) >= LT_CALM_G || Math.abs(g[1]) >= LT_CALM_G) continue;
-    const v = ltRaw(data, i, sec);
-    if (!v) continue;
-    xs.push(v[0]); ys.push(v[1]);
-    for (const w of LT_WHEELS) ws[w].push(data.susp[w][i]);
-  }
-  if (xs.length < LT_MIN_CALM) return { x: 0, y: 0, n: xs.length, wheels: null };
-  const wheels = {};
-  for (const w of LT_WHEELS) wheels[w] = ggPercentile(ws[w], 0.5);
-  return { x: ggPercentile(xs, 0.5), y: ggPercentile(ys, 0.5), n: xs.length, wheels };
-}
-
-/** 合成加速度(G)。値が無いか、はね上がり(GG_SANE_G 超)なら null。sec は ggAt と同じ */
-function ggMag(data, i, sec = 0) {
-  const v = ggAt(data, i, sec);
-  if (!v) return null;
-  const m = Math.hypot(v[0], v[1]);
-  return m > GG_SANE_G ? null : m;
-}
-
-/**
- * i 行目の路面の種類。舗装(ジャンプ台・縁石を含む)は 0、ほかは SurfaceKind の番号(1 雪など、2 ダート、4 芝・荒れ地、5 不明)。
- * -1 = 無し(停止区間)、-2 = 空中、-3 = 混在(4 輪の路面が違う)
- */
-function ggSurfaceGroup(data, i) {
-  const sf = data.surface;
-  const c = [sf.fl[i], sf.fr[i], sf.rl[i], sf.rr[i]];
-  if (c.some((v) => v == null)) return -1;
-  const k = c.map((v) => v & 7);
-  if (k.some((v) => v === 6)) return -2;
-  const g = k.map((v) => (GG_PAVED.has(v) ? 0 : v));
-  return g.every((v) => v === g[0]) ? g[0] : -3;
-}
-
-/** sorted(昇順)の中で、v 以上になる最初の位置 */
-function ggLowerBound(sorted, v) {
-  let lo = 0, hi = sorted.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (sorted[mid] < v) lo = mid + 1; else hi = mid;
-  }
-  return lo;
-}
-
-/** 円の推定と点群から除く行(接触・着地の前後、ジャンプの間とその後)。1 ならその行を除く */
-function ggExcludeMask(data, marks) {
-  const t = data.t, mask = new Uint8Array(t.length);
-  if (!marks) return mask;
-  const spans = [];
-  for (const c of marks.contacts || []) spans.push([c.t - GG_CONTACT_SEC, c.t + GG_CONTACT_SEC]);
-  for (const j of marks.jumps || []) spans.push([j.t0 - 0.1, j.t1 + GG_AFTER_JUMP_SEC]);
-  for (const [a, b] of spans) {
-    for (let i = ggLowerBound(t, a); i < t.length && t[i] <= b; i++) mask[i] = 1;
-  }
-  return mask;
-}
-
-/** 昇順にしていない数の並びの p 番目(0〜1)の値 */
-function ggPercentile(values, p) {
-  const s = Float64Array.from(values).sort();
-  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))];
-}
-
-/**
- * 円の推定: 路面ごと(舗装は 1 つにまとめる)に、合成加速度の上位 2% の大きさ。行数が足りない路面は円を作らない。
- * at は行 → [横, 縦](既定は G。荷重移動では縮みの差)、sane はそれより大きい値を除く境目。
- * 戻り値: { rings: Map(路面 → { r: 半径, n: 行数 }), rmax: いちばん大きい円の半径(円が 1 つも無ければ 0) }
- */
-function ggEstimate(data, rows, mask, at = ggAt, sane = GG_SANE_G) {
-  const buckets = new Map();
-  for (const i of rows) {
-    if (mask && mask[i]) continue;
-    if (data.speed[i] == null || data.speed[i] < GG_MIN_KMH) continue;
-    const v = at(data, i);
-    if (!v) continue;
-    const m = Math.hypot(v[0], v[1]);
-    if (m > sane) continue;
-    const g = ggSurfaceGroup(data, i);
-    if (g < 0 || g === 5) continue;
-    let list = buckets.get(g);
-    if (!list) buckets.set(g, list = []);
-    list.push(m);
-  }
-  const rings = new Map();
-  let rmax = 0;
-  for (const [g, list] of buckets) {
-    if (list.length < GG_RING_MIN_ROWS) continue;
-    const r = ggPercentile(list, GG_RING_PERCENTILE);
-    rings.set(g, { r, n: list.length });
-    rmax = Math.max(rmax, r);
-  }
-  return { rings, rmax };
-}
 
 const FrictionCircle = {
   canvas: null,
-  data: null,          // 系列(横軸が時間のもの。gLat・gLong・speed・slipF・slipR・surface・t を使う)
-  rows: null,          // 円の推定と点群に使う行(選んでいるレースの行。全体なら全部)
-  marks: null,
-  est: { rings: new Map(), rmax: 0 },
-  scaleMax: GG_DEFAULT_MAX,   // 表示の上限(G)
+  data: null,          // 系列(横軸が時間のもの。t・slipF・slipR・susp・friction を使う)
+  f: null,             // C# が作った摩擦円・荷重移動(HostFriction。選んでいるレース・ならしの幅のもの。届くまで null)
+  view: null,          // 今描くものの分(f.gg か f.load)
+  rings: new Map(),    // 今描くものの、路面 → 円の半径
+  scaleMax: GG_EMPTY_SCALE.load,   // 表示の上限
   trailSec: 3,         // 軌跡の長さ(秒。0 = 出さない)
   cloud: true,         // 点群(選んでいる範囲で出た加速度の全部)を薄く出すか
-  smoothSec: LT_SMOOTH_SEC, // 荷重移動・摩擦円をならす幅(前後の秒)
   kind: "load",        // 描くもの: "load"(荷重移動。サスペンションの縮みの差)/ "gg"(摩擦円。G)
-  base: { x: 0, y: 0, n: 0, wheels: null },   // 荷重移動の基準(ltBaseline)
-  ggEst: { rings: new Map(), rmax: 0 },        // 摩擦円(G)の円。描いているものによらず作る(グラフの「摩擦円の %」に使う)
 
-  _mask: null,
   _bg: null,           // 下絵(目盛り・円・点群)
   _geom: null,         // { w, h, cx, cy, s }(s = 1G あたりの px)
   _last: null,
@@ -270,7 +50,6 @@ const FrictionCircle = {
     new ResizeObserver(() => this._rebuild()).observe(canvas);
   },
 
-  /** 使う行を決める。rows が null なら記録全体。marks は接触・ジャンプの印(そのまわりを除く) */
   /**
    * この車の限界(計測モードの車のプロファイル)。路面のキー(paved・dirt・grass・snow)ごとに { left, right, brake, launch }(G。測れていなければ null)。
    * 今いる路面の分を、緑の破線で描く(上 = 発進、下 = ブレーキ、左右 = 旋回。4 つの楕円の 1/4 をつなぐ。両方の軸が測れた 1/4 だけ)
@@ -278,145 +57,61 @@ const FrictionCircle = {
   limits: null,
   setLimits(bySurface) { this.limits = bySurface || null; this._redraw(); },
 
-  setRows(data, rows, marks) {
-    if (!data || !data.gLat || !data.gLong || !data.surface) {
-      this.data = null; this.rows = null; this._mask = null;
-      this.est = { rings: new Map(), rmax: 0 };
-      this.base = { x: 0, y: 0, n: 0, wheels: null };
-      this.scaleMax = this.kind === "load" ? LT_DEFAULT_MAX : GG_DEFAULT_MAX;
-      this._rebuild();
-      return;
-    }
-    this.data = data;
-    this.marks = marks || null;
-    this.rows = rows || data.t.map((_, i) => i);
-    this._mask = ggExcludeMask(data, this.marks);
-    this.base = ltBaseline(data, this.rows, this._mask, this.smoothSec);
-    this.ggEst = ggEstimate(data, this.rows, this._mask, (d, i) => this._ggAt(i));
-    this._estimate();
+  /** 描くものを決める。data は系列(null なら記録なし)、friction は C# から届いた HostFriction(まだなら null) */
+  setData(data, friction) {
+    this.data = data && data.friction ? data : null;
+    this.f = this.data && friction ? friction : null;
+    this._pick();
     this._rebuild();
   },
 
-  /** 今の描くもの(kind)で、円と表示の上限を作り直す */
-  _estimate() {
-    if (!this.data) return;
-    if (this.kind === "load") {
-      this.est = ggEstimate(this.data, this.rows, this._mask, (d, i) => this._loadAt(i), LT_SANE);
-      this.scaleMax = this.est.rmax > 0 ? Math.max(0.2, this.est.rmax * GG_CAP_RATIO) : LT_DEFAULT_MAX;
-    } else {
-      this.est = this.ggEst;
-      this.scaleMax = this.est.rmax > 0 ? Math.max(1, this.est.rmax * GG_CAP_RATIO) : GG_DEFAULT_MAX;
-    }
+  /** 今の描くもの(kind)の分を選ぶ */
+  _pick() {
+    this.view = this.f ? (this.kind === "load" ? this.f.load : this.f.gg) : null;
+    this.rings = new Map(this.view ? this.view.rings.map((r) => [r.group, r.r]) : []);
+    this.scaleMax = this.view ? this.view.scaleMax : GG_EMPTY_SCALE[this.kind];
   },
 
-  /** 行 i の荷重移動 [右 − 左, 前 − 後ろ](基準からの差)。値が無ければ null */
-  _loadAt(i) {
-    const v = ltRaw(this.data, i, this.smoothSec);
-    return v ? [v[0] - this.base.x, v[1] - this.base.y] : null;
+  /** 今の描くものでの、行 i の [横, 縦](摩擦円は G、荷重移動は基準からの縮みの差)。値が無ければ null */
+  _at(i) {
+    const v = this.view;
+    return v && v.x[i] != null ? [v.x[i], v.y[i]] : null;
   },
-
-  /** 行 i の [横 G, 前後 G](「ならし」の幅でならす) */
-  _ggAt(i) { return ggAt(this.data, i, this.smoothSec); },
-
-  /** 今の描くものでの、行 i の [横, 縦] */
-  _at(i) { return this.kind === "load" ? this._loadAt(i) : this._ggAt(i); },
 
   setTrail(sec) { this.trailSec = sec; this._redraw(); },
   setCloud(on) { this.cloud = on; this._rebuild(); },
-  /** 荷重移動・摩擦円をならす幅(秒)を変える。基準と円も、その幅でならした値で作り直す(グラフの系列は呼ぶ側で loadSeries・gripSeries から作り直す) */
-  setSmooth(sec) {
-    this.smoothSec = sec > 0 ? sec : LT_SMOOTH_SEC;
-    if (this.data) {
-      this.base = ltBaseline(this.data, this.rows, this._mask, this.smoothSec);
-      this.ggEst = ggEstimate(this.data, this.rows, this._mask, (d, i) => this._ggAt(i));
-      this._estimate();
-    }
-    this._rebuild();
-  },
   setKind(kind) {
     this.kind = kind === "gg" ? "gg" : "load";
-    if (this.data) this._estimate();
-    else this.scaleMax = this.kind === "load" ? LT_DEFAULT_MAX : GG_DEFAULT_MAX;
+    this._pick();
     this._rebuild();
   },
 
-  /** 読み取り値用: 今の行の { lat, lon, mag, group, ring(その路面の G の円の半径。摩擦円を描いていないときと、無いときは null) }。値が無ければ null */
+  /** 読み取り値用: 今の行の { lat, lon }(G。「ならし」の幅でならしたもの)。値が無ければ null */
   info(pos) {
-    if (!this.data || pos == null || pos < 0) return null;
-    const v = this._ggAt(pos);
-    if (!v) return null;
-    const group = ggSurfaceGroup(this.data, pos);
-    const ring = this.kind === "gg" && group >= 0 && this.est.rings.has(group) ? this.est.rings.get(group).r : null;
-    return { lat: v[0], lon: v[1], mag: Math.hypot(v[0], v[1]), group, ring };
+    if (!this.f || pos == null || pos < 0 || this.f.gg.x[pos] == null) return null;
+    return { lat: this.f.gg.x[pos], lon: this.f.gg.y[pos] };
   },
 
   /** 読み取り値用: 今の行の荷重移動 { side(右 − 左), front(前 − 後ろ)}(縮みの差。基準からの差)。値が無ければ null */
   loadInfo(pos) {
-    if (!this.data || pos == null || pos < 0) return null;
-    const v = this._loadAt(pos);
-    return v ? { side: v[0], front: v[1] } : null;
+    if (!this.f || pos == null || pos < 0 || this.f.load.x[pos] == null) return null;
+    return { side: this.f.load.x[pos], front: this.f.load.y[pos] };
   },
 
-  /**
-   * グラフ用の荷重移動の系列(全部の行。基準は選んでいるレースのもの)。{ long, lat }(%。小数 1 桁。出せない行は null)。
-   * G と同じ段に重ねるので、向きを G に合わせる: long は正 = 後ろが沈む(加速の側)、lat は正 = 左が沈む(右コーナーの側)
-   */
-  loadSeries() {
-    const d = this.data;
-    if (!d) return { long: null, lat: null };
-    const long = new Array(d.t.length), lat = new Array(d.t.length);
-    for (let i = 0; i < d.t.length; i++) {
-      const v = this._loadAt(i);
-      long[i] = v ? Math.round(-v[1] * 1000) / 10 : null;
-      lat[i] = v ? Math.round(-v[0] * 1000) / 10 : null;
-    }
-    return { long, lat };
-  },
-
-  /**
-   * グラフ用の「摩擦円の %」(全部の行)。合成 G ÷ その路面の円(摩擦円の左上の「円の %」と同じ)。
-   * 4 輪の路面が混ざっている行(舗装とダートの境など)は、円がある路面の車輪の円の平均で割る(_ringOfRow)。
-   * 円が無い路面・空中・値が無い行は null。はね上がり(GG_SANE_G 超)も null
-   */
-  gripSeries() {
-    const d = this.data;
-    if (!d) return null;
-    const out = new Array(d.t.length);
-    for (let i = 0; i < d.t.length; i++) {
-      const m = ggMag(d, i, this.smoothSec), ring = this._ringOfRow(i);
-      out[i] = m == null || ring == null || !(ring > 0) ? null : Math.round((m / ring) * 1000) / 10;
-    }
-    return out;
-  },
-
-  /**
-   * 行 i の摩擦円(G)の円の半径。路面が混ざっていれば、4 輪のうち円がある路面の車輪の、円の平均
-   * (雪・芝は円を作れるほど走らないことが多いので、その車輪は数えない)。無ければ null
-   */
-  _ringOfRow(i) {
-    const d = this.data, grp = ggSurfaceGroup(d, i), rings = this.ggEst.rings;
-    if (grp >= 0) return rings.has(grp) ? rings.get(grp).r : null;
-    if (grp !== -3) return null;
-    let sum = 0, n = 0;
-    for (const w of LT_WHEELS) {
-      const k = d.surface[w][i] & 7, g = GG_PAVED.has(k) ? 0 : k;
-      if (rings.has(g)) { sum += rings.get(g).r; n++; }
-    }
-    return n ? sum / n : null;
-  },
-
-  /** 読み取り値用: 今の行の 4 輪の縮み { fl, fr, rl, rr }(0 = 伸び切り、1 = 縮み切り)。値が無ければ null */
+  /** 読み取り値用: 今の行の 4 輪の縮み { fl, fr, rl, rr }(0 = 伸び切り、1 = 縮み切り。ならさない。伸び切りの行も含める)。値が無ければ null */
   wheelInfo(pos) {
     if (!this.data || pos == null || pos < 0) return null;
-    return ltWheels(this.data, pos);
+    const s = this.data.susp;
+    if (!s || LT_WHEELS.some((w) => s[w][pos] == null)) return null;
+    return { fl: s.fl[pos], fr: s.fr[pos], rl: s.rl[pos], rr: s.rr[pos] };
   },
 
-  /** 今の描くものでの、今の行の { mag, group, ring }(円の強調と割合に使う) */
+  /** 今の描くものでの、今の行の { mag(点の中心からの長さ), group, ring(その路面の円の半径。無ければ null) }(円の強調と割合に使う) */
   _ringInfo(pos) {
     const v = this._at(pos);
     if (!v) return null;
-    const group = ggSurfaceGroup(this.data, pos);
-    const ring = group >= 0 && this.est.rings.has(group) ? this.est.rings.get(group).r : null;
+    const group = this.data.friction.group[pos];
+    const ring = this.rings.has(group) ? this.rings.get(group) : null;
     return { mag: Math.hypot(v[0], v[1]), group, ring };
   },
 
@@ -479,7 +174,7 @@ const FrictionCircle = {
     circle(this.scaleMax); g.stroke();
 
     // 路面ごとの円。舗装は実線で薄く、ほかは点線
-    for (const [grp, ring] of this.est.rings) {
+    for (const [grp, r] of this.rings) {
       if (grp === 0) {
         g.setLineDash([]);
         g.strokeStyle = "rgba(207,214,228,0.4)";
@@ -490,21 +185,18 @@ const FrictionCircle = {
         g.globalAlpha = 0.4;
         g.lineWidth = dpr;
       }
-      circle(ring.r); g.stroke();
+      circle(r); g.stroke();
       g.globalAlpha = 1;
     }
     g.setLineDash([]);
 
-    // 点群
-    if (this.cloud && this.data) {
-      const d = this.data, mask = this._mask;
+    // 点群(C# が選んだ行。表示の上限より外は描かない)
+    if (this.cloud && this.view) {
       g.fillStyle = "rgba(150,170,200,0.22)";
       const px = Math.max(1, Math.round(1.6 * dpr));
-      for (const i of this.rows) {
-        if (mask && mask[i]) continue;
-        if (d.speed[i] == null || d.speed[i] < GG_CLOUD_KMH) continue;
+      for (const i of this.view.cloud) {
         const v = this._at(i);
-        if (!v || Math.hypot(v[0], v[1]) > this.scaleMax) continue;
+        if (Math.hypot(v[0], v[1]) > this.scaleMax) continue;
         const [x, y] = this._xy(v[0], v[1]);
         g.fillRect(x - px / 2, y - px / 2, px, px);
       }
@@ -540,9 +232,9 @@ const FrictionCircle = {
     if (!d || pos == null || pos < 0) return;
     if (!this._at(pos)) {
       // 荷重移動の点が出せない行(空中: どれかの車輪が伸び切り)でも、4 輪の棒は出す(浮いて伸び切った車輪が見える)
-      if (this.kind === "load" && ltWheels(d, pos)) {
+      if (this.kind === "load" && this.wheelInfo(pos)) {
         this._drawWheels(g, dpr, pos);
-        if (ggSurfaceGroup(d, pos) === -2) {
+        if (d.friction.group[pos] === -2) {
           g.fillStyle = LT_LIGHT_COLOR;
           g.font = `${11 * dpr}px "Yu Gothic UI", sans-serif`;
           g.textAlign = "left";
@@ -648,23 +340,25 @@ const FrictionCircle = {
 
   /**
    * 4 輪の棒。車を上から見たタイヤの並びで、円のまわりに置く(上が前輪、左が左のタイヤ。前後より左右を近く)。
-   * 棒の長さ = サスペンションの伸び(実際のばねのように、荷重がかかって沈むほど短くなる。下の端が地面)。「ならし」によらず、いつも前後 LT_SMOOTH_SEC(0.25 秒)でならす。
+   * 棒の長さ = サスペンションの伸び(実際のばねのように、荷重がかかって沈むほど短くなる。下の端が地面)。
+   * 値は C# の FrictionStatic.WheelBars(「ならし」によらず、いつも前後 0.25 秒でならす)。
    * 黄の細い線 = その幅の中でいちばん縮んだ所(ならさない記録の値。ならした棒が低く出ても、荷重の山がどこまで行ったかが分かる。伸びた側は線が混むので描かない)。
-   * 白の横線 = まっすぐ一定の速さのときの長さ(基準)。幅の中で一度でも浮きかけ(LT_LIGHT 未満)なら赤、縮み切りに近い(LT_BOTTOM 超)なら橙。
+   * 白の横線 = まっすぐ一定の速さのときの長さ(基準)。幅の中で一度でも浮きかけなら赤、縮み切りに近ければ橙。
    * 点と軌跡より先に描き、半透明にする(円に重なっても点が見えるように)
    */
   _drawWheels(g, dpr, pos) {
-    const v = ltWheelsSmooth(this.data, pos, LT_SMOOTH_SEC);
-    if (!v) return;
+    const bars = this.data.friction.wheels;
+    if (bars.fl.avg[pos] == null) return;
     const G = this._geom, R = this.scaleMax * G.s;
     const bw = Math.max(9 * dpr, R * 0.13), bh = R * 0.55;
     const dx = R * 0.5, dy = R * 0.68;                 // 左右の間(中心から)は前後より狭く
     const at = { fl: [-dx, -dy], fr: [dx, -dy], rl: [-dx, dy], rr: [dx, dy] };
     const clamp = (x) => Math.max(0, Math.min(1, x));
-    for (const w of LT_WHEELS) {
+    LT_WHEELS.forEach((w, k) => {
       const x = G.cx + at[w][0] - bw / 2, yGround = G.cy + at[w][1] + bh / 2;
-      const s = clamp(v.avg[w]), len = bh * (1 - s);
-      const light = v.lo[w] < LT_LIGHT, bottom = v.hi[w] > LT_BOTTOM;
+      // ならした縮みは 1 万分の 1、いちばん縮んだ値は 1000 分の 1 の整数で届く。状態は 4 輪で 1 つの整数(車輪ごとに 2 ビット: 浮きかけ・縮み切りに近い)
+      const bar = bars[w], s = clamp(bar.avg[pos] / 10000), len = bh * (1 - s);
+      const bits = bars.state[pos] >> (2 * k), light = (bits & 1) !== 0, bottom = (bits & 2) !== 0;
       // 縮み切りに近いと棒はほとんど 0 の長さになるので、下地も橙にして目立たせる
       g.globalAlpha = bottom ? 0.45 : 0.5;
       g.fillStyle = bottom ? GG_SLIP_COLOR : "#3a3f47";
@@ -674,20 +368,20 @@ const FrictionCircle = {
       g.fillRect(x, yGround - len, bw, Math.max(dpr, len));
       g.globalAlpha = 1;
       // 山の印。棒の端とほとんど重なるなら描かない(ならした値と変わらない)
-      const yPeak = yGround - bh * (1 - clamp(v.hi[w]));
+      const yPeak = yGround - bh * (1 - clamp(bar.hi[pos] / 1000));
       if (Math.abs(yPeak - (yGround - len)) >= 1.5 * dpr) {
         g.fillStyle = "#ffcc33";
         g.fillRect(x, yPeak - dpr, bw, 2 * dpr);
       }
-      const b = this.base.wheels && this.base.wheels[w];
+      const b = this.f && this.f.baseWheels ? this.f.baseWheels[k] : null;   // 基準の長さ(C# の FrictionDynamic.BuildBaseline)
       if (b != null) {
         g.fillStyle = "#e6e8eb";
         g.fillRect(x - 2 * dpr, yGround - bh * (1 - b) - dpr / 2, bw + 4 * dpr, Math.max(1, dpr));
       }
-    }
+    });
   },
 };
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { FrictionCircle, ggAt, ggMag, ggSurfaceGroup, ggExcludeMask, ggPercentile, ggEstimate, ltRaw, ltWheels, ltWheelsSmooth, ltBaseline, GG_RING_MIN_ROWS, GG_CAP_RATIO };
+  module.exports = { FrictionCircle };
 }

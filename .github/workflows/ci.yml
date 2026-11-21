@@ -28,6 +28,23 @@ jobs:
       - name: Test
         run: dotnet test csharp/HEISO.slnx -c Release --no-build --logger "trx;LogFilePrefix=test" --results-directory TestResults
 
+      # tools/dev は公開リポジトリに出さないので、無ければ飛ばす
+      - uses: actions/setup-node@v4
+        if: hashFiles('tools/dev/typecheck.mjs') != ''
+        with:
+          node-version: 22
+
+      - name: JS test
+        if: hashFiles('tools/dev/typecheck.mjs') != ''
+        run: node tools/dev/frictioncircle.test.mjs
+
+      # TypeScript は検査のときだけ一時フォルダへ入れる。リポジトリにも配布物にも入らない
+      - name: JS type check
+        if: hashFiles('tools/dev/typecheck.mjs') != ''
+        run: |
+          npm install --no-audit --no-fund --prefix "$env:RUNNER_TEMP\ts" typescript@6.0.3
+          node tools/dev/typecheck.mjs "$env:RUNNER_TEMP\ts\node_modules\typescript\lib\typescript.js"
+
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4

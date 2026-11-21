@@ -1,178 +1,6 @@
-// グラフの段の組み合わせ(系列の定義、プリセット、設定パネル、描画)。
-// 系列は「段」に自由に入れられる。段の中の1つ目の単位は左、2つ目は右に目盛りを付け、3つ目以降は目盛りなしで描く。
+// グラフの描画(uPlot)。段の組み合わせは graphseries.js、設定パネルは graphsettings.js。
+// 全部のファイルが 1 つの大域を共有する(index.html の読み込み順。graphseries.js → graphs.js → graphsettings.js)。
 "use strict";
-
-// ---- 系列と単位 ----
-
-// 後から回転数や G を足すときは、ここに1行足す(C# の LoadedSession.BuildSeries にも列を足す)
-// mark = 印(線ではない)、strip = 帯(路面)
-const SERIES = {
-  speed:   { label: t("速度"),       unit: "kmh",  stroke: "#4ea1ff" },
-  gear:    { label: t("ギア"),       unit: "gear", stroke: "#b8bec7", stepped: true, width: 1 },
-  accel:   { label: t("アクセル"),   unit: "pct",  stroke: "#4cd07d" },
-  brake:   { label: t("ブレーキ"),   unit: "pct",  stroke: "#ff5d5d" },
-  steer:   { label: t("操舵"),       unit: "spct", stroke: "#c792ea" },
-  turn:    { label: t("旋回"),       unit: "turn", stroke: "#f5c542", width: 1.2 },
-  slipF:   { label: t("前輪スリップ"), unit: "slip", stroke: "#ff9f43" },
-  slipR:   { label: t("後輪スリップ"), unit: "slip", stroke: "#54a0ff" },
-  // 後輪 − 前輪の滑り角。0 より上(赤)= オーバー、下(青)= アンダー。塗りは 0 を境に色を変える(balance)
-  balance: { label: t("オーバー / アンダー"), unit: "bal", stroke: "#ff6b6b", balance: true, width: 1.2 },
-  counter: { label: t("カウンター"), mark: true },
-  gLong:   { label: t("前後G"),      unit: "g",    stroke: "#2dd4bf" },
-  gLat:    { label: t("横G"),        unit: "g",    stroke: "#f472b6" },
-  // 荷重移動(サスペンションの縮みの差。FrictionCircle.loadSeries が選んでいるレースの基準で作る)。
-  // G と同じ段に重ねて遅れを見るので、向きを G に合わせる(前後は正 = 後ろが沈む = 加速の側、左右は正 = 左が沈む = 右コーナーの側)
-  loadLong: { label: t("前後の荷重"), unit: "load", stroke: "#fbbf24", width: 1.6 },
-  loadLat:  { label: t("左右の荷重"), unit: "load", stroke: "#fde68a", width: 1.6 },
-  // 合成 G ÷ その路面の摩擦円の円(FrictionCircle.gripSeries)。100 = この走りで出した最大(上位 2%)。グリップをどれだけ使えたか
-  grip:     { label: t("摩擦円の %"), unit: "grip", stroke: "#c4b5fd", width: 1.3 },
-  grade:   { label: t("勾配"),       unit: "grade", stroke: "#a3e635" },
-  elev:    { label: t("標高"),       unit: "m",    stroke: "#c3ccd8", width: 1.5 },
-  // 性能モード(docs/spec.md「性能モード」)。最適な範囲は今のギアのもの(破線)。
-  // 変速の得失 = 今すぐ次のギアへ変速した場合の出力の差(最大出力に対する %)。全開の間だけ
-  rpm:     { label: t("回転数"),     unit: "rpm",  stroke: "#4ea1ff" },
-  // 最適な範囲(得失が ±3% 以内)の下と上。出力が平らな車では広く、リミッターまで引っ張る方が得なギアではリミッターの手前
-  optRpm:  { label: t("最適な範囲(下)"), unit: "rpm", stroke: "#e0a33a", width: 1.2, dash: [6, 4] },
-  optRpmHi: { label: t("最適な範囲(上)"), unit: "rpm", stroke: "#e0a33a", width: 1.2, dash: [2, 4] },
-  gain:    { label: t("変速の得失"), unit: "gain", stroke: "#c3ccd8", width: 1.3 },
-  shift:   { label: t("変速の点"),   mark: true },
-  surface: { label: t("路面"),       strip: true },
-  contact: { label: t("接触の印"),   mark: true },
-  jump:    { label: t("ジャンプ"),   mark: true },
-};
-
-const UNITS = {
-  kmh:   { get label() { return Units.speedLabel(); } },
-  pct:   { label: "%", range: [0, 100] },
-  spct:  { label: t("% 正=右"), range: [-100, 100] },
-  gear:  { label: t("ギア"), range: (u, min, max) => [0, Math.max(6, max || 0) + 0.5] },
-  turn:  { label: t("1000/R 正=右"), range: (u, min, max) => { const a = Math.max(10, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
-  slip:  { label: t("スリップ 1=限界"), range: (u, min, max) => [0, Math.max(1.5, max || 0)] },
-  bal:   { label: t("後輪 − 前輪 正=オーバー"), range: (u, min, max) => { const a = Math.min(4, Math.max(1, Math.abs(min || 0), Math.abs(max || 0))); return [-a, a]; } },
-  g:     { label: t("G 前後は正=加速・横は正=右"), range: (u, min, max) => { const a = Math.max(1, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
-  // 0 を真ん中にそろえる(G の段に重ねたとき、両方の 0 が同じ高さになるように)
-  grip:  { label: t("% 100=その路面の円"), range: (u, min, max) => [0, Math.min(150, Math.max(120, max || 0))] },
-  load:  { label: t("% 前後は正=後ろが沈む・左右は正=左が沈む"), range: (u, min, max) => { const a = Math.min(100, Math.max(20, Math.abs(min || 0), Math.abs(max || 0))); return [-a, a]; } },
-  grade: { label: t("勾配 % 正=上り"), range: (u, min, max) => { const a = Math.max(5, Math.abs(min || 0), Math.abs(max || 0)); return [-a, a]; } },
-  // 標高: 上下はコース(選んだレース。全体なら記録)の最低〜最高で固定する(Graphs.elevRange。app.js が決める)
-  rpm:   { label: "rpm", range: (u, min, max) => [Math.max(0, Math.floor(((min ?? 0) - 300) / 1000) * 1000), Math.ceil(((max ?? 8000) + 300) / 1000) * 1000] },
-  gain:  { label: t("% 正=変速が遅い"), range: (u, min, max) => { const a = Math.min(30, Math.max(10, Math.abs(min || 0), Math.abs(max || 0))); return [-a, a]; } },
-  m:     { get label() { return t("標高 {unit}", { unit: Units.elevLabel() }); }, range: (u, min, max) => Graphs.elevRange ? Graphs.elevRange.map((v) => Units.elevOf(v)) : [min, max] },
-};
-
-// 路面の帯の色(C# の SurfaceKind の番号。6 = 空中、7 = 縁石)。+8 = 縁石の印(FH6 では立たない)、+16 = 水たまり
-const SURFACE = [
-  { name: t("舗装"), color: "#5b6270" },
-  { name: t("雪など"), color: "#e8f1ff" },        // 0.10。サーキットの縁の外などにも出る(雪以外も含む)
-  { name: t("ダート"), color: "#b7793b" },
-  { name: t("ジャンプ台など"), color: "#9b59b6" }, // 0.20。街中のコースやグリッドにも出る
-  { name: t("芝・荒れ地"), color: "#3fa34d" },
-  { name: t("不明"), color: "#2b2f36" },
-  { name: t("空中"), color: null },
-  { name: t("縁石"), color: "#c9a227" },            // 0.24(サーキットで確認)
-];
-const WHEEL_NAMES = { fl: t("左前"), fr: t("右前"), rl: t("左後"), rr: t("右後") };
-
-// 段の高さ(描画域の高さ px)
-const HEIGHTS = { s: 70, m: 110, l: 150 };
-const HEIGHT_NAMES = { s: t("小"), m: t("中"), l: t("大") };
-
-const PRESETS = {
-  p4: { name: t("4段(今までの形)"), lanes: [
-    { h: "l", s: ["speed", "contact", "jump"] }, { h: "m", s: ["accel", "brake"] }, { h: "m", s: ["steer"] }, { h: "s", s: ["gear"] }] },
-  p3: { name: t("3段"), lanes: [
-    { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["steer"] }] },
-  p2: { name: t("2段"), lanes: [
-    { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "m", s: ["accel", "brake", "steer"] }] },
-  p6: { name: t("詳細"), lanes: [
-    { h: "l", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["steer", "turn", "counter"] },
-    { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance"] }, { h: "s", s: ["surface"] }, { h: "s", s: ["elev"] }] },
-  // G(力がかかった)と荷重(車が沈んだ)を同じ段に重ね、荷重が遅れて乗る・戻るのを見る
-  pLoad: { name: t("荷重移動"), lanes: [
-    { h: "m", s: ["speed", "gear", "contact", "jump"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["gLong", "loadLong"] }, { h: "m", s: ["gLat", "loadLat"] }, { h: "s", s: ["steer", "counter"] }] },
-};
-// 性能モードの段の組み合わせ(見える化のプリセットとは別に覚える)
-const PERF_PRESETS = {
-  // ギアは回転数の段に重ねると最適な範囲の破線と紛れるので、細い段に分ける
-  perf: { name: t("性能(標準)"), lanes: [
-    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance", "counter"] }] },
-  perfSpeed: { name: t("性能(速度つき)"), lanes: [
-    { h: "l", s: ["rpm", "optRpm", "optRpmHi"] }, { h: "s", s: ["gear"] }, { h: "m", s: ["gain", "shift"] }, { h: "s", s: ["speed"] }, { h: "s", s: ["accel", "brake"] }, { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance", "counter"] }] },
-  perfLoad: { name: t("性能(荷重移動)"), lanes: [
-    { h: "m", s: ["speed", "gear"] }, { h: "s", s: ["accel", "brake"] }, { h: "m", s: ["gLong", "loadLong"] }, { h: "m", s: ["gLat", "loadLat"] }, { h: "s", s: ["grip"] }, { h: "s", s: ["slipF", "slipR"] }, { h: "s", s: ["balance", "counter"] }] },
-};
-const DEFAULT_PERF_PRESET = "perf";
-// 全開とみなすアクセル(%)。C# の PowerAnalysis.FullThrottle(242/255)と同じ。系列のアクセルは小数 1 桁に丸めてあるので 94.9
-const PERF_FULL_PCT = 94.9;
-
-// 変速の点の色(早い・適正・遅い。得失を出せないものは灰色)
-const SHIFT_COLORS = { early: "#9d8cff", ok: "#3cc68a", late: "#ff7a45", none: "#9aa1ab" };
-const SHIFT_NAMES = { early: t("早い"), ok: t("適正"), late: t("遅い") };
-
-// 前の版の「詳細」(最後の段が勾配)。そのまま使っていたら、今の「詳細」(標高)に置き換える
-const OLD_P6_LAST = ["grade"];
-const DEFAULT_PRESET = "p3";
-
-const MARK_COLORS = { start: "#36cfc9", lap: "#e6e6e6", contact: "#ff8a3d", jump: "#b388ff", cause: "#ff4d4f", skip: "#9aa1ab", counter: "#ffd166" };
-// オーバー / アンダーの塗り(0 より上 = オーバー、下 = アンダー)
-const BALANCE_COLORS = { over: "#ff6b6b", under: "#54a0ff" };
-
-/** オーバー / アンダーの色: 0 の高さで赤(上)と青(下)を切り替える縦のグラデーション */
-function balanceGradient(u, scale, alpha) {
-  const { top, height } = u.bbox;
-  if (!u.scales[scale] || height <= 0) return BALANCE_COLORS.over;
-  const y0 = u.valToPos(0, scale, true);
-  const f = Math.min(1, Math.max(0, (y0 - top) / height));
-  const a = Math.round(alpha * 255).toString(16).padStart(2, "0");
-  const g = u.ctx.createLinearGradient(0, top, 0, top + height);
-  g.addColorStop(0, BALANCE_COLORS.over + a); g.addColorStop(f, BALANCE_COLORS.over + a);
-  g.addColorStop(f, BALANCE_COLORS.under + a); g.addColorStop(1, BALANCE_COLORS.under + a);
-  return g;
-}
-
-// ---- 設定の保存(この PC のこのアプリの中だけ) ----
-
-// 見える化と性能で別に覚える
-const LAYOUT_KEYS = { vis: "heiso.graphLayout.v1", perf: "heiso.graphLayout.perf.v1" };
-const CUSTOM_KEYS = { vis: "heiso.graphCustom.v1", perf: "heiso.graphCustom.perf.v1" };
-const presetsOf = (mode) => (mode === "perf" ? PERF_PRESETS : PRESETS);
-
-function cloneLanes(lanes) { return lanes.map((l) => ({ h: l.h, s: [...l.s] })); }
-
-function validLanes(lanes) {
-  if (!Array.isArray(lanes)) return false;
-  const seen = new Set();
-  for (const l of lanes) {
-    if (!l || !HEIGHTS[l.h] || !Array.isArray(l.s)) return false;
-    for (const id of l.s) { if (!SERIES[id] || seen.has(id)) return false; seen.add(id); }
-  }
-  return true;
-}
-
-function storageGet(key) {
-  try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
-}
-function storageSet(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 保存できなくても表示は続ける */ }
-}
-
-function loadLayout(mode = "vis") {
-  const saved = storageGet(LAYOUT_KEYS[mode]);
-  if (saved && validLanes(saved.lanes)) {
-    if (mode === "vis" && saved.preset === "p6" && saved.lanes.length === PRESETS.p6.lanes.length
-        && JSON.stringify(saved.lanes[saved.lanes.length - 1].s) === JSON.stringify(OLD_P6_LAST)) {
-      return { preset: "p6", lanes: cloneLanes(PRESETS.p6.lanes) };
-    }
-    return { preset: saved.preset ?? null, lanes: cloneLanes(saved.lanes) };
-  }
-  const def = mode === "perf" ? DEFAULT_PERF_PRESET : DEFAULT_PRESET;
-  return { preset: def, lanes: cloneLanes(presetsOf(mode)[def].lanes) };
-}
-
-function customLanes(mode) {
-  const c = storageGet(CUSTOM_KEYS[mode]);
-  return c && validLanes(c) ? c : null;
-}
 
 // ---- グラフ本体 ----
 
@@ -221,7 +49,8 @@ const Graphs = {
   applyLanes(lanes, preset) {
     const range = this.xRange();
     this.layout = { preset, lanes: cloneLanes(lanes) };
-    storageSet(LAYOUT_KEYS[this.mode], this.layout);
+    (settings.layouts ||= {})[this.mode] = { preset, lanes: cloneLanes(lanes) };
+    saveSettings();
     this.build();
     if (range) this.setRange(range.min, range.max);
     renderSettings();
@@ -438,11 +267,11 @@ const Graphs = {
       }
     }
 
-    // 路面の逸脱に続くスリップ: スリップの段に薄い赤の帯(逸脱の始まりから、スリップが限界を下回るまで)
+    // 路面の逸脱に続くスリップ: スリップの段に薄い赤の帯(逸脱の始まりから、スリップが限界を下回るまで。終わりは C# の SlipBand)
     if (flags.slip) {
       ctx.fillStyle = MARK_COLORS.cause + "33";
       for (const e of this.marks.excursions || []) {
-        const x0 = X(e.t0), x1 = X(excursionEnd(e));
+        const x0 = X(e.t0), x1 = X(slipBandEnd(e));
         if (x1 < left || x0 > left + width) continue;
         ctx.fillRect(x0, top, Math.max(2, x1 - x0), height);
       }
@@ -455,7 +284,7 @@ const Graphs = {
       ctx.fillStyle = "#3a3f4999";
       let run = -1;
       for (let i = i0; i <= i1 + 1; i++) {
-        const partial = i <= i1 && d.gain[i] == null && d.gear[i] != null && d.accel[i] != null && d.accel[i] < PERF_FULL_PCT;
+        const partial = i <= i1 && d.gain[i] == null && d.gear[i] != null && d.full[i] === 0;
         if (partial && run < 0) run = i;
         if (!partial && run >= 0) {
           const x0 = X(d.t[run]), x1 = X(d.t[Math.min(i, d.t.length - 1)]);
@@ -679,7 +508,7 @@ const Graphs = {
   _excursionNear(u, px) {
     if (!u._flags.surface && !u._flags.slip) return null;
     const t = u.posToVal(px, "x"), pad = 4 / Math.max(1, u.bbox.width / (devicePixelRatio || 1)) * (u.scales.x.max - u.scales.x.min);
-    return (this.marks.excursions || []).find((e) => t >= e.t0 - pad && t <= (u._flags.slip ? excursionEnd(e) : e.t1) + pad) || null;
+    return (this.marks.excursions || []).find((e) => t >= e.t0 - pad && t <= (u._flags.slip ? slipBandEnd(e) : e.t1) + pad) || null;
   },
 
   /** 画面上の x の位置が空中の帯の中か、着地の近くならそのジャンプ */
@@ -846,9 +675,9 @@ const Graphs = {
 
 // ---- 路面の逸脱の説明 ----
 
-/** 逸脱に続くスリップの帯の終わり(スリップが限界を下回るまで。無ければ逸脱の終わりか 2 秒) */
-function excursionEnd(e) {
-  return Math.max(e.t1, e.slipEndT ?? e.slipT ?? e.t0 + 2);
+/** 逸脱に続くスリップの帯の終わり(C# が出した slipBandT1。横軸が距離で、その時刻がやり直した走りの中なら逸脱の終わり) */
+function slipBandEnd(e) {
+  return e.slipBandT1 ?? e.t1;
 }
 
 /** 変速の点の説明: 「3→4 速 6,890 rpm ・ 得失 -5.2%(早い)」 */
@@ -885,100 +714,4 @@ function excursionText(e) {
   }
   if (e.gap) text += t(" → リワインドなど(停止区間)");
   return text;
-}
-
-// ---- 設定パネル ----
-
-function renderSettings() {
-  const panel = document.getElementById("graphSettings");
-  if (!document.getElementById("settingsDlg").open) return;   // 設定のダイアログを開いているときだけ作る
-  const layout = Graphs.layout;
-  const mode = Graphs.mode;
-  const custom = customLanes(mode);
-  const used = new Set(layout.lanes.flatMap((l) => l.s));
-
-  const presetOpts = Object.entries(presetsOf(mode)).map(([k, p]) =>
-    `<option value="${k}"${layout.preset === k ? " selected" : ""}>${p.name}</option>`).join("")
-    + (custom ? `<option value="custom"${layout.preset === "custom" ? " selected" : ""}>${t("自分の設定")}</option>` : "")
-    + (layout.preset == null ? `<option value="" selected>${t("(変更あり)")}</option>` : "");
-
-  const lanesHtml = layout.lanes.map((lane, i) => {
-    const chips = lane.s.map((id) =>
-      `<span class="chipItem" draggable="true" data-series="${id}" data-lane="${i}">${SERIES[id].label}<button class="x" data-remove="${id}" title="${t("外す")}">×</button></span>`).join("");
-    const unused = Object.keys(SERIES).filter((id) => !used.has(id));
-    const add = unused.length
-      ? `<select class="add" data-lane="${i}"><option value="">${t("+ 追加")}</option>${unused.map((id) => `<option value="${id}">${SERIES[id].label}</option>`).join("")}</select>`
-      : "";
-    const heights = Object.keys(HEIGHTS).map((h) => `<option value="${h}"${lane.h === h ? " selected" : ""}>${HEIGHT_NAMES[h]}</option>`).join("");
-    return `<div class="laneRow" data-lane="${i}">
-      <span class="laneNo">${t("段{n}", { n: i + 1 })}</span>
-      <select class="height" data-lane="${i}" title="${t("高さ")}">${heights}</select>
-      <span class="chipsBox">${chips || `<span class="muted">${t("(空)")}</span>`}</span>
-      ${add}
-      <span class="laneOps">
-        <button data-up="${i}" title="${t("上へ")}"${i === 0 ? " disabled" : ""}>▲</button>
-        <button data-down="${i}" title="${t("下へ")}"${i === layout.lanes.length - 1 ? " disabled" : ""}>▼</button>
-        <button data-del="${i}" title="${t("段を消す")}">${t("削除")}</button>
-      </span>
-    </div>`;
-  }).join("");
-
-  panel.innerHTML = `
-    <div class="settingsHead">
-      <span>${mode === "perf" ? t("性能モードの段") : t("見える化の段")}</span>
-      <label>${t("プリセット")} <select id="presetSel">${presetOpts}</select></label>
-      <button id="saveCustom">${t("自分の設定として保存")}</button>
-      <span class="muted">${t("札をドラッグして別の段へ移せます。変更はすぐ反映され、次回も使います。")}</span>
-    </div>
-    ${lanesHtml}
-    <button id="addLane">${t("+ 段を追加")}</button>`;
-
-  const edit = (fn) => {
-    const lanes = cloneLanes(Graphs.layout.lanes);
-    fn(lanes);
-    Graphs.applyLanes(lanes, null);
-  };
-
-  panel.querySelector("#presetSel").onchange = (e) => {
-    const v = e.target.value;
-    if (v === "custom" && custom) Graphs.applyLanes(custom, "custom");
-    else if (presetsOf(mode)[v]) Graphs.applyLanes(presetsOf(mode)[v].lanes, v);
-  };
-  panel.querySelector("#saveCustom").onclick = () => {
-    storageSet(CUSTOM_KEYS[mode], Graphs.layout.lanes);
-    Graphs.applyLanes(Graphs.layout.lanes, "custom");
-  };
-  panel.querySelector("#addLane").onclick = () => edit((l) => l.push({ h: "m", s: [] }));
-  panel.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () =>
-    edit((l) => { for (const lane of l) lane.s = lane.s.filter((id) => id !== b.dataset.remove); }));
-  panel.querySelectorAll("select.add").forEach((s) => s.onchange = () => {
-    if (s.value) edit((l) => l[Number(s.dataset.lane)].s.push(s.value));
-  });
-  panel.querySelectorAll("select.height").forEach((s) => s.onchange = () =>
-    edit((l) => { l[Number(s.dataset.lane)].h = s.value; }));
-  panel.querySelectorAll("[data-up]").forEach((b) => b.onclick = () => edit((l) => {
-    const i = Number(b.dataset.up); [l[i - 1], l[i]] = [l[i], l[i - 1]];
-  }));
-  panel.querySelectorAll("[data-down]").forEach((b) => b.onclick = () => edit((l) => {
-    const i = Number(b.dataset.down); [l[i], l[i + 1]] = [l[i + 1], l[i]];
-  }));
-  panel.querySelectorAll("[data-del]").forEach((b) => b.onclick = () => edit((l) => l.splice(Number(b.dataset.del), 1)));
-
-  // 札のドラッグ
-  panel.querySelectorAll(".chipItem").forEach((c) => {
-    c.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", c.dataset.series); e.dataTransfer.effectAllowed = "move"; });
-  });
-  panel.querySelectorAll(".laneRow").forEach((row) => {
-    row.addEventListener("dragover", (e) => { e.preventDefault(); row.classList.add("drop"); });
-    row.addEventListener("dragleave", () => row.classList.remove("drop"));
-    row.addEventListener("drop", (e) => {
-      e.preventDefault();
-      const id = e.dataTransfer.getData("text/plain");
-      if (!SERIES[id]) return;
-      edit((l) => {
-        for (const lane of l) lane.s = lane.s.filter((x) => x !== id);
-        l[Number(row.dataset.lane)].s.push(id);
-      });
-    });
-  });
 }

@@ -8,7 +8,7 @@
 "use strict";
 
 // ---- 路面の色(2D と 3D で使う) ----
-// 4 輪の路面が同じ行だけその路面の色、違う行は「混在」。空中の間は直前の色を続け、ごく短い(3 行未満の)ちらつきはならす
+// 4 輪の路面が同じ行だけその路面の色、違う行は「混在」(分類は C# の CourseLine.SurfaceKinds。ここは色だけ)
 const COURSE_SURFACE = [
   { name: t("舗装"), rgb: [0.48, 0.51, 0.57] },
   { name: t("雪など"), rgb: [0.91, 0.95, 1.0] },
@@ -21,52 +21,26 @@ const COURSE_SURFACE = [
 ];
 const COURSE_MIXED = { name: t("混在(4 輪の路面が違う)"), rgb: [0.85, 0.27, 0.94] };
 
-/** 系列の位置ごとの路面の色 [r, g, b](0〜1)。停止区間などは null */
-function buildSurfaceColors(data) {
-  const sf = data.surface, n = data.t.length;
-  const kind = new Int16Array(n).fill(-1);      // 0〜7 = 路面、8 = 混在、-1 = 無し、-2 = 空中
-  for (let i = 0; i < n; i++) {
-    const c = [sf.fl[i], sf.fr[i], sf.rl[i], sf.rr[i]];
-    if (c.some((v) => v == null)) continue;
-    const k = c.map((v) => v & 7);
-    if (k.some((v) => v === 6)) { kind[i] = -2; continue; }
-    kind[i] = k.every((v) => v === k[0]) ? k[0] : 8;
-  }
-  // 空中は直前の路面を続ける
-  let prev = -1;
-  for (let i = 0; i < n; i++) {
-    if (kind[i] === -2) kind[i] = prev;
-    else if (kind[i] >= 0) prev = kind[i];
-    else prev = -1;
-  }
-  // 3 行未満の短い区間は、前の路面にならす
-  let runStart = 0;
-  for (let i = 1; i <= n; i++) {
-    if (i < n && kind[i] === kind[runStart]) continue;
-    if (i - runStart < 3 && runStart > 0 && kind[runStart] >= 0 && kind[runStart - 1] >= 0)
-      for (let j = runStart; j < i; j++) kind[j] = kind[runStart - 1];
-    runStart = i;
-  }
-  return Array.from(kind, (k) => (k < 0 ? null : k === 8 ? COURSE_MIXED.rgb : COURSE_SURFACE[k].rgb));
+/** 系列の位置ごとの路面の色 [r, g, b](0〜1)。kinds は C# の路面の分類(0〜7 = 路面、8 = 混在、null = 無し。CourseLine.SurfaceKinds) */
+function courseSurfaceRgb(kinds) {
+  return kinds.map((k) => (k == null ? null : k === 8 ? COURSE_MIXED.rgb : COURSE_SURFACE[k].rgb));
 }
-
-/** 1 サンプルでこれを超えて動いたら、つながっていない(ファストトラベル・復帰・リワインド) */
-const COURSE_JUMP_M = 50;
 
 /**
  * rows の k 番目の行の進む向き(x = 東、z = 北の平面の単位ベクトル [dx, dz])。
- * 前後に span m ずつ離れた点を結んだ方向にする(隣の点の方向だと、位置の細かいぶれで向きが左右に振れる)。分からなければ null
+ * 前後に span m ずつ離れた点を結んだ方向にする(隣の点の方向だと、位置の細かいぶれで向きが左右に振れる)。分からなければ null。
+ * brk: 系列の位置 → 1 なら、その行で線が切れている(C# の CourseLine.BreakRows)
  */
-function courseHeading(data, rows, k, span = 6) {
+function courseHeading(data, rows, k, brk, span = 6) {
   const { x, z } = data, n = rows.length, i = rows[k];
   let a = k, b = k;
   for (let j = k - 1; j >= 0 && k - j < 400; j--) {
-    if (Math.hypot(x[rows[j]] - x[rows[j + 1]], z[rows[j]] - z[rows[j + 1]]) > COURSE_JUMP_M) break;
+    if (brk[rows[j + 1]]) break;
     a = j;
     if (Math.hypot(x[rows[j]] - x[i], z[rows[j]] - z[i]) >= span) break;
   }
   for (let j = k + 1; j < n && j - k < 400; j++) {
-    if (Math.hypot(x[rows[j]] - x[rows[j - 1]], z[rows[j]] - z[rows[j - 1]]) > COURSE_JUMP_M) break;
+    if (brk[rows[j]]) break;
     b = j;
     if (Math.hypot(x[rows[j]] - x[i], z[rows[j]] - z[i]) >= span) break;
   }
@@ -80,9 +54,9 @@ function courseHeading(data, rows, k, span = 6) {
  *   スピン中は曲がりが急で遅いので、候補にならない
  * - 1 つの区間は、一辺 limitM の 8 割の四角に収まる長さ。収まる候補が無いときは、その中の後ろ半分で一番曲がりの緩い所で区切る
  * - 位置の飛び(リワインド・復帰)でも区切る
- * 戻り値: [{ k0, k1, cx, cz, dir: [dx, dz] }](rows の中の番号の範囲、四角の中心、区間の始まりから終わりへの向き)
+ * 戻り値: [{ k0, k1, cx, cz, dir: [dx, dz] }](rows の中の番号の範囲、四角の中心、区間の始まりから終わりへの向き)。brk は courseHeading と同じ
  */
-function buildFollowSections(data, rows, limitM) {
+function buildFollowSections(data, rows, limitM, brk) {
   const { x, z, t, turn, speed } = data, n = rows.length;
   if (n < 2) return [];
   const straight = rows.map((i) => turn[i] != null && Math.abs(turn[i]) < 3 && speed[i] != null && speed[i] > 50);
@@ -101,7 +75,7 @@ function buildFollowSections(data, rows, limitM) {
     let lastCand = -1, k = start + 1, end = -1, next = -1;
     for (; k < n; k++) {
       const i = rows[k], p = rows[k - 1];
-      if (Math.hypot(x[i] - x[p], z[i] - z[p]) > COURSE_JUMP_M) { end = k - 1; next = k; break; }
+      if (brk[i]) { end = k - 1; next = k; break; }
       minX = Math.min(minX, x[i]); maxX = Math.max(maxX, x[i]);
       minZ = Math.min(minZ, z[i]); maxZ = Math.max(maxZ, z[i]);
       if (Math.max(maxX - minX, maxZ - minZ) > lim) {
@@ -129,7 +103,7 @@ function buildFollowSections(data, rows, limitM) {
     }
     let dx = x[rows[end]] - x[rows[start]], dz = z[rows[end]] - z[rows[start]];
     let len = Math.hypot(dx, dz);
-    let dir = len >= 20 ? [dx / len, dz / len] : courseHeading(data, rows, start) || [0, 1];
+    let dir = len >= 20 ? [dx / len, dz / len] : courseHeading(data, rows, start, brk) || [0, 1];
     sections.push({ k0: start, k1: end, cx: (ax + bx) / 2, cz: (az + bz) / 2, dir });
     start = next >= 0 ? next : end;
   }
@@ -157,6 +131,7 @@ const CourseMap = {
   data: null,         // 系列(横軸が時間のもの。x, z, t を使う)
   rows: null,         // 描く行(系列の中の位置、昇順)
   cut: null,          // 系列の位置 → 1 ならやり直し区間の行(Uint8Array)。無ければ null
+  brk: null,          // 系列の位置 → 1 なら、その行で線を切る(Uint8Array。C# の CourseLine.BreakRows)
   colors: null,       // 系列の位置 → 路面の色 [r, g, b](buildSurfaceColors)
   colorMode: "lap",   // "lap"(今の周を青)/ "surface"(路面の色)
   followMode: "live", // 拡大中の追従: "live"(いつも今の位置が真ん中)/ "step"(区間ごとに区切って、区間が変わったら移る)
@@ -173,19 +148,17 @@ const CourseMap = {
   _view: null,        // 最後に描いたときの { cx, cz, s }(クリックの位置を戻すため)
   _last: { pos: null, t0: null, t1: null, l0: null, l1: null },
 
-  /** 1 サンプルでこれを超えて動いたら線を切る(ファストトラベル・復帰) */
-  JUMP_M: 50,
-
   init(canvas) {
     this.canvas = canvas;
     new ResizeObserver(() => this._rebuild()).observe(canvas);
     canvas.addEventListener("click", (e) => this._click(e));
   },
 
-  /** 描く行を決める。rows が null なら記録全体。cut: やり直し区間の行の印(系列の位置ごと) */
-  setRows(data, rows, cut, colors) {
+  /** 描く行を決める。rows が null なら記録全体。cut: やり直し区間の行の印、brk: 線を切る行の印(どちらも系列の位置ごと) */
+  setRows(data, rows, cut, colors, brk) {
     this.data = data;
     this.cut = cut || null;
+    this.brk = brk || null;
     this.colors = colors || null;
     if (!data) { this.rows = null; this._rebuild(); return; }
     const all = rows || data.t.map((_, i) => i);
@@ -214,7 +187,7 @@ const CourseMap = {
       const col = this.colors[i];
       const [px, py] = this._P(view, i);
       const out = px < -margin || px > c.width + margin || py < -margin || py > c.height + margin;
-      const jump = k > a && Math.hypot(x[i] - x[rows[k - 1]], z[i] - z[rows[k - 1]]) > this.JUMP_M;
+      const jump = k > a && this.brk[i];
       if (out || !col || !keep(i) || jump) { flush(); prev = out || !col || !keep(i) ? null : [px, py]; continue; }
       if (col !== cur) {
         flush();
@@ -241,7 +214,7 @@ const CourseMap = {
   _stepCenter(k) {
     const key = `${this.zoom}|${this.rows.length}|${this.rows[0]}`;
     if (this._sectionKey !== key) {
-      this._sections = buildFollowSections(this.data, this.rows, this.zoom);
+      this._sections = buildFollowSections(this.data, this.rows, this.zoom, this.brk);
       this._sectionKey = key;
       this._target = null;
     }
@@ -354,7 +327,7 @@ const CourseMap = {
       const i = rows[k];
       const [px, py] = this._P(view, i);
       const out = px < -margin || px > c.width + margin || py < -margin || py > c.height + margin;
-      const jump = k > a && Math.hypot(x[i] - x[rows[k - 1]], z[i] - z[rows[k - 1]]) > this.JUMP_M;
+      const jump = k > a && this.brk[i];
       if (out || (keep && !keep(i))) { pen = false; continue; }
       if (jump) pen = false;
       if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py);
@@ -450,7 +423,7 @@ const CourseMap = {
 
     const [px, py] = this._P(view, this.rows[k]);
     // 向き: 前後 6m ずつ離れた点を結んだ方向(画面では x = 東が右、北が上)
-    const h = courseHeading(this.data, this.rows, k);
+    const h = courseHeading(this.data, this.rows, k, this.brk);
     const dir = h ? Math.atan2(-h[1], h[0]) : null;
     g.fillStyle = "#ffcc33";
     g.strokeStyle = "#000";

@@ -1,17 +1,18 @@
 // HEISO Player の画面。データの読み込みと時刻の変換は C#(Fh6.Core)が行い、
 // ここには横軸を「動画の秒」に直した系列が届く。ポインターの位置は動画の再生位置そのもの。
 // グラフの段の組み合わせと描画は graphs.js、コース図は coursemap.js。
+// 画面の部分ごとに races.js・axis.js・mapview.js・videos.js・dialogs.js に分けてある(この順に読み込む)。
 // 横軸を「距離」にしたときは、選んだレースの距離(C# の RaceDistance)で系列と印を並べ直してグラフに渡す。
 "use strict";
 
-const host = window.chrome.webview;
+/** @type {(id: string) => any} */
 const $ = (id) => document.getElementById(id);
 
 // ---- ログ(落ちたときの原因を探るため。C# が %LOCALAPPDATA%\HEISO\Player\logs に書く) ----
 
 /** 操作や出来事を C# のログに書く */
 function logEvent(message, level = "info") {
-  try { host.postMessage({ type: "log", level, message: String(message).slice(0, 2000) }); } catch { }
+  try { sendToHost({ type: "log", level, message: String(message).slice(0, 2000) }); } catch { }
 }
 window.addEventListener("error", (e) => {
   logEvent(`JS のエラー: ${e.message} (${e.filename}:${e.lineno}:${e.colno})${e.error && e.error.stack ? "\n" + e.error.stack : ""}`, "error");
@@ -21,58 +22,7 @@ window.addEventListener("unhandledrejection", (e) => {
   logEvent(`JS の拾われなかった Promise のエラー: ${r && r.stack ? r.stack : r}`, "error");
 });
 
-// ---- 設定(どの記録にも共通。この PC のこのアプリの中に保存する) ----
-// グラフの段の組み合わせは graphs.js が別に保存している
-
-const SETTINGS_KEY = "heiso.playerSettings.v1";
-const DEFAULT_SETTINGS = {
-  contacts: true,        // 接触の候補の印
-  launches: false,       // レース以外の発進も印にする
-  autoStart: false,      // 開いたら最初のレースのスタート 3 秒前から再生
-  skipRedo: false,       // やり直し区間を自動で飛ばす
-  method: "StartedEvent", // 同期の方式
-  rate: 1,               // 速さ(最後に使ったもの)
-  span: 20,              // 表示幅(秒。最後に使ったもの)
-  mapPos: "side",        // コース図の位置: "side"(右の欄)/ "graph"(グラフの横。右下)
-  mapW: 0,               // グラフの横のときのコース図の幅(px。0 = グラフの高さに合わせた正方形)
-  mapH: 0,               // 同じく高さ(px)
-  viewMode: "vis",       // 表示のモード: "vis"(見える化)/ "perf"(性能。回転数と変速の得失、荷重移動・摩擦円・パワーカーブ)/ "measure"(計測。車のプロファイル)
-  mapMode: "2d",         // コース図の場所に出すもの: "2d"(真上から)/ "3d"(立体)/ "load"(荷重移動)/ "gg"(摩擦円)。見える化のとき
-  mapModePerf: "load",   // 同じく、性能モードのとき
-  mapColor: "lap",       // コース図の色: "lap"(今の周を青)/ "surface"(路面の色)
-  map3dView: "tilt",     // 3D の視点: "top"(真上)/ "tilt"(斜め)/ "chase"(後ろから)
-  map3dExag: "auto",     // 3D の高さの強調: "auto" / "1" / "3" / "5"
-  mapFollow: "live",     // 拡大中の追従: "live"(いつも今の位置)/ "step"(直線で区切った区間ごと)
-  mapZoom: 0,            // コース図の範囲(一辺の m。0 = 全体。最後に使ったもの)
-  ggTrail: 3,            // 摩擦円の軌跡の長さ(秒。0 = 出さない)
-  ggCloud: true,         // 摩擦円に、選んでいる範囲の加速度の全部を薄い点で重ねるか
-  ltSmooth: 0.25,        // 荷重移動・摩擦円をならす幅(前後の秒。0.25 / 0.5 / 0.75 / 1)
-  view: "all",           // 記録を開いたときの範囲: "all"(全体)/ "race"(レース別。1 レース目)
-  axis: "time",          // 記録を開いたときの横軸: "time" / "dist"(距離なら 1 レース目を選ぶ)
-  unitSpeed: "auto",     // 速度の単位: "auto"(Windows の地域で決める)/ "kmh" / "mph"
-  unitDist: "auto",      // 距離の単位: "auto" / "m"(m・km)/ "ft"(ft・mi)
-  unitElev: "auto",      // 標高の単位: "auto" / "m" / "ft"
-  settingsTab: "graph",  // 設定のダイアログで最後に開いていたタブ: "graph" / "screen" / "play" / "sync"
-};
-
-function loadSettings() {
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null"); } catch { }
-  const s = { ...DEFAULT_SETTINGS, ...(saved || {}) };
-  delete s.ggLoad;   // 前の版の「荷重の向き」(荷重移動に置き換えた)
-  if (!saved) {
-    // 前の版で個別に覚えていたものを引き継ぐ
-    try {
-      if (localStorage.getItem("heiso.autoStart") === "1") s.autoStart = true;
-      if (localStorage.getItem("heiso.skipRedo") === "1") s.skipRedo = true;
-    } catch { }
-  }
-  return s;
-}
-const settings = loadSettings();
-function saveSettings() {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 保存できなくても表示は続ける */ }
-}
+// 設定(settings・saveSettings)は settings.js
 
 const video = $("video");
 let span = settings.span; // 表示幅(秒)。0 = 全体
@@ -87,10 +37,14 @@ let frameSec = 1 / 30;      // 1 コマの長さ(録画ファイルのフレー�
 let fps = null;             // 録画ファイルのフレームレート(C# が session.json かファイルから読む)
 let tdata = null;           // 横軸が時間の系列(C# から届いたまま)。読み取り値とコース図はこれを使う
 let tmarks = null;          // 横軸が時間の印
+let friction = null;        // C# が作った摩擦円・荷重移動(HostFriction)。選んでいるレース・ならしの幅のもの
+let raceSel = null;         // 選んでいるレースの番号(null なら「全体」)。C# の SelectionViewModel が持ち、HostSession・HostRaceSelected で届く
+let raceAsked = false;      // レースの選択を C# に送って、答えを待っている(再生中に同じ切り替えを何度も送らない)
 let axis = "time";          // グラフの横軸: "time" / "dist"
 let skipOn = false;         // やり直し区間を飛ばすか(上の欄のスイッチ。この記録の間だけ。開いたときは設定の値)
 let cutRows = null;         // 系列の位置 → 1 ならやり直し区間の行(コース図の色分け)
-let surfaceColors = null;   // 系列の位置 → 路面の色(コース図の路面の色のモード。coursemap.js の buildSurfaceColors)
+let surfaceColors = null;   // 系列の位置 → 路面の色(コース図の路面の色のモード。分類は C# から届き、色は coursemap.js の courseSurfaceRgb)
+let breakRows = null;       // 系列の位置 → 1 なら、その行でコース図の線を切る(位置が飛んだ行)
 let view3d = false;         // 3D のコース図を準備できたか(WebGL2 が使えないときは 2D のまま)
 let distMap = null;         // 横軸が距離のとき: { all, kept, pos, d }(下の buildDistMap)
 const frameGaps = [];
@@ -98,8 +52,7 @@ const METHOD_NAMES = { SyncSamples: t("録画中の対応表"), StartedEvent: t(
 
 // ---- C# とのやりとり ----
 
-host.addEventListener("message", (e) => {
-  const m = e.data;
+onHostMessage((m) => {
   if (m.type === "loading") show("loading");
   else if (m.type === "error") { $("errorText").textContent = m.message; show("error"); }
   else if (m.type === "session") onSession(m);
@@ -121,9 +74,11 @@ host.addEventListener("message", (e) => {
   else if (m.type === "videoMissing") onVideoMissing(m);
   else if (m.type === "videoSelected") $("videoSel").value = m.active || "";
   else if (m.type === "sessionList") Sessions.onList(m);   // sessions.js
+  else if (m.type === "friction") onFriction(m);
+  else if (m.type === "raceSelected") onRaceSelected(m);
 });
 
-$("openPackage").onclick = () => host.postMessage({ type: "openPackage" });
+$("openPackage").onclick = () => sendToHost({ type: "openPackage" });
 
 // 書き出す: 選んでいるレースを配布パッケージに(保存先は C# で選ぶ)
 let isPackage = false;
@@ -139,7 +94,7 @@ $("exportBtn").onclick = () => {
     : "";
   $("exNoAudio").checked = false;
   $("exportDlg").showModal();
-  host.postMessage({ type: "probeFfmpeg" });   // ffmpeg が使えるか(C# が覚えているので、2 回目からはすぐ)
+  sendToHost({ type: "probeFfmpeg" });   // ffmpeg が使えるか(C# が覚えているので、2 回目からはすぐ)
 };
 $("exCancel").onclick = () => $("exportDlg").close();
 $("exGo").onclick = () => {
@@ -148,7 +103,7 @@ $("exGo").onclick = () => {
   $("exportDlg").close();
   if (!r) return;
   logEvent(`書き出す: ${races.indexOf(r) + 1} レース目(${mode === "720" ? "720p" : "元の画質"})`);
-  host.postMessage({ type: "export", race: races.indexOf(r), mode, noAudio: $("exNoAudio").checked });
+  sendToHost({ type: "export", race: races.indexOf(r), mode, noAudio: $("exNoAudio").checked });
 };
 
 // ---- ffmpeg(720p の書き出し)の状態。書き出しの画面と、設定の「書き出し」タブに出す ----
@@ -187,10 +142,10 @@ function onFfmpegStatus(m) {
   sel.value = m.encoders.some((e) => e.id === m.encoder) ? m.encoder : "auto";
 }
 
-$("sFfmpeg").onchange = () => host.postMessage({ type: "setFfmpegPath", path: $("sFfmpeg").value });
-$("sFfmpegBrowse").onclick = () => host.postMessage({ type: "browseFfmpeg" });
-$("sFfmpegCheck").onclick = () => host.postMessage({ type: "probeFfmpeg", force: true });
-$("sEncoder").onchange = () => host.postMessage({ type: "setExportEncoder", encoder: $("sEncoder").value });
+$("sFfmpeg").onchange = () => sendToHost({ type: "setFfmpegPath", path: $("sFfmpeg").value });
+$("sFfmpegBrowse").onclick = () => sendToHost({ type: "browseFfmpeg" });
+$("sFfmpegCheck").onclick = () => sendToHost({ type: "probeFfmpeg", force: true });
+$("sEncoder").onchange = () => sendToHost({ type: "setExportEncoder", encoder: $("sEncoder").value });
 
 // ---- 長くかかる処理(720p の書き出し)の進み具合 ----
 
@@ -202,23 +157,18 @@ function onJob(m) {
   $("jobPct").textContent = `${Math.round((m.progress || 0) * 100)}%`;
   $("jobCancel").hidden = !m.cancellable;
 }
-$("jobCancel").onclick = () => host.postMessage({ type: "cancelJob" });
+$("jobCancel").onclick = () => sendToHost({ type: "cancelJob" });
 $("method").onchange = (e) => {
   settings.method = e.target.value;
   saveSettings();
-  host.postMessage({ type: "method", method: e.target.value });
+  sendToHost({ type: "method", method: e.target.value });
 };
 
 /** 画面(WebView2 の描画のプロセス)が落ちて読み直した後: 元の動画の位置へ */
 function onRestore(m) {
   pendingStart = null;
   // 動画を切り替えたとき: 切り替えの前と同じレースを選ぶ(リプレイはレースが 1 本だけ)
-  if (m.race != null && races[m.race]) {
-    $("race").value = String(m.race);
-    setRaceRange(races[m.race]);
-    updateRaceNamesBtn();
-    renderAxis(null);
-  }
+  if (m.race != null && races[m.race]) selectRace(m.race, "restore");
   const go = () => {
     seek(m.sec);
     followTo(m.sec, true);
@@ -234,8 +184,8 @@ function onCrashNotice(m) {
     + (m.dump ? t(" ・ ") + t("クラッシュダンプ: {file}", { file: m.dump }) : "");
   $("crashNotice").hidden = false;
 }
-$("openLogs").onclick = () => host.postMessage({ type: "openLogs" });
-$("crashClose").onclick = () => { $("crashNotice").hidden = true; host.postMessage({ type: "crashNoticeClosed" }); };
+$("openLogs").onclick = () => sendToHost({ type: "openLogs" });
+$("crashClose").onclick = () => { $("crashNotice").hidden = true; sendToHost({ type: "crashNoticeClosed" }); };
 
 // 動画の位置と再生中かを約 2 秒ごとに C# へ(画面が落ちたときに、読み直してそこへ戻し、再生していたら続けるため)
 let lastReported = "";
@@ -245,7 +195,7 @@ setInterval(() => {
   const key = `${sec.toFixed(2)} ${playing}`;
   if (key === lastReported) return;
   lastReported = key;
-  host.postMessage({ type: "position", sec, playing });
+  sendToHost({ type: "position", sec, playing });
 }, 2000);
 
 function show(id) {
@@ -276,7 +226,8 @@ function onSession(m) {
     tdata = null;
     tmarks = { starts: [], contacts: [] };
     CourseMap.setRows(null, null);
-    FrictionCircle.setRows(null, null, null);
+    friction = raceSel = null;
+    FrictionCircle.setData(null, null);
     FrictionCircle.setLimits(null);
     PowerChart.setData(null);
     Measure.setData(null);
@@ -290,21 +241,21 @@ function onSession(m) {
   const keepRange = m.keepVideo ? Graphs.xRange() : null;
   tdata = m.series;
   tmarks = m.marks;
+  friction = null;            // 系列が変わったので、C# が作り直して送ってくる
+  raceSel = m.race ?? null;   // 選ぶレースは C# が決める(新しく開いたときは設定の「記録を開いたときの表示」と横軸で)
   Measure.setData(m.measure);
   fps = m.fps || null;
   if (fps) frameSec = 1 / fps;
   $("fpsText").textContent = fps ? `${+fps.toFixed(2)} fps` : "";
-  fillRaces(m.marks.races || [], m.keepVideo);
-  cutRows = buildCutRows();
-  surfaceColors = buildSurfaceColors(tdata);
+  fillRaces(m.marks.races || []);
+  cutRows = rowFlags(tdata.t.length, m.marks.cut);
+  surfaceColors = courseSurfaceRgb(tdata.course.surface);
+  breakRows = rowFlags(tdata.t.length, tdata.course.breaks);
   if (!m.keepVideo) {
     setSkip(settings.skipRedo);
-    // 新しく開いたときは、設定の「記録を開いたときの表示」で。レース別なら 1 レース目(距離でも 1 レース目を選ぶ)
+    // 新しく開いたときは、設定の「記録を開いたときの表示」と横軸で(レース別か距離なら、C# が 1 レース目を選んでいる)
     axis = settings.axis;
-    if (settings.view === "race" && races.length) {
-      $("race").value = "0";
-      setRaceRange(races[0]);
-    }
+    if (selectedRace()) setRaceRange(selectedRace());
   }
   renderAxis(keepRange);
   showMarks();
@@ -457,7 +408,7 @@ Graphs.onDragSeek = (x) => {
 Graphs.onSeek = (x) => seek(Graphs.xToSec(x));
 Graphs.onSeekTime = (sec) => seek(sec);
 
-new ResizeObserver(() => { Graphs.resize(); updatePointer(pointerSec); }).observe($("charts"));
+// グラフの欄の大きさの見張りは、全部のファイルを読み込んでから始める(dialogs.js の終わり)
 
 // ---- ポインターと読み取り値 ----
 
@@ -522,7 +473,7 @@ function showPerfReadout(i) {
   const rpm = i < 0 || d.rpm[i] == null ? null : d.rpm[i];
   const pi = PowerChart.info(i);
   $("rRpm").textContent = rpm == null ? "-"
-    : `${Math.round(rpm).toLocaleString("en-US")} rpm` + (pi && pi.hp != null ? ` / ${Math.round(pi.hp)} hp` : "");
+    : `${Math.round(rpm).toLocaleString("en-US")} rpm` + (d.readout.hp[i] != null ? ` / ${Math.round(d.readout.hp[i])} hp` : "");
   const gain = i < 0 ? null : d.gain[i];
   // 最適な範囲(得失が ±3% 以内)。範囲が 1 点なら 1 つの回転数で。範囲が無く、最適な変速回転数も無ければリミッターまで
   const fmtRpm = (v) => Math.round(v).toLocaleString("en-US");
@@ -530,20 +481,21 @@ function showPerfReadout(i) {
   const optText = range
     ? (range[1] - range[0] >= 50 ? t("(最適 {lo}〜{hi} rpm)", { lo: fmtRpm(range[0]), hi: fmtRpm(range[1]) }) : t("(最適 {rpm} rpm)", { rpm: fmtRpm(range[0]) }))
     : pi && pi.opt === null ? t("(最適: リミッターまで)") : "";
+  // 判定と、得失を出せない理由は C# の PerfReadout が出した状態
+  const state = i < 0 ? null : d.readout.state[i];
   if (gain == null) {
-    // 出せない理由: 全開でない / パワーカーブが無い / 次のギアの比が分からない(そのギアの全開の行が少ない)/ 変速した後の回転数がカーブの外
-    const why = i < 0 || d.gear[i] == null || d.accel[i] == null ? "-"
-      : d.accel[i] < PERF_FULL_PCT ? t("全開でない")
-      : !pi || !pi.curve ? t("出せない(パワーカーブが無い)")
-      // 次のギアの比が無い: 次のギアを使っていなければ最後のギアかもしれない(ギアの数はテレメトリーに無い)。使っていれば、全開の行が足りない
-      : !pi.ratio ? (pi.nextUsed ? t("出せない(次のギアの全開の行が足りない)") : t("このギアより上を使っていない(最後のギアなら変速の判定は無し)"))
-      : pi.hp == null ? t("出せない(今の回転数がパワーカーブの外)")
-      : t("出せない(変速した後の {rpm} rpm がパワーカーブの外)", { rpm: Math.round(rpm * pi.ratio).toLocaleString("en-US") });
+    // 次のギアの比が無い: 次のギアを使っていなければ最後のギアかもしれない(ギアの数はテレメトリーに無い)。使っていれば、全開の行が足りない
+    const why = state === "notFull" ? t("全開でない")
+      : state === "noCurve" ? t("出せない(パワーカーブが無い)")
+      : state === "nextFewRows" ? t("出せない(次のギアの全開の行が足りない)")
+      : state === "nextUnused" ? t("このギアより上を使っていない(最後のギアなら変速の判定は無し)")
+      : state === "rpmOutside" ? t("出せない(今の回転数がパワーカーブの外)")
+      : state === "afterOutside" ? t("出せない(変速した後の {rpm} rpm がパワーカーブの外)", { rpm: Math.round(d.readout.rpmAfter[i]).toLocaleString("en-US") })
+      : "-";
     $("rShift").textContent = why + optText;
     return;
   }
-  const verdict = gain < -3 ? "early" : gain > 3 ? "late" : "ok";
-  $("rShift").textContent = `${gain > 0 ? "+" : ""}${gain.toFixed(1)}%(${SHIFT_NAMES[verdict]})${optText}`;
+  $("rShift").textContent = `${gain > 0 ? "+" : ""}${gain.toFixed(1)}%(${SHIFT_NAMES[state]})${optText}`;
 }
 
 /** 4輪の路面を短く(同じなら1つに) */
@@ -699,1311 +651,3 @@ for (const b of document.querySelectorAll("#spans button")) {
     followTo(pointerSec, true);
   };
 }
-
-// ---- レースの選択 ----
-// 記録の中のレース区間(ロガー v3 の判定)。選ぶとスタートの 3 秒前へ移り、グラフをその区間に合わせる
-
-let races = [];
-
-/** 完走・中断を何で決めたか(Fh6.Core の RaceSegment.FinishedBy) */
-const FINISHED_BY = {
-  lap: t("ゴールで周回数が増えた"),
-  results: t("直後のリザルト画面の間、レースの時計が進んだ"),
-  menu: t("直後の停止区間で、レースの時計が止まっていた(メニュー)"),
-  log_end: t("リザルト画面のまま記録が終わった"),
-  speed: t("終えた瞬間の速度と、直後の停止区間の長さから"),
-};
-
-function raceLabel(r, i) {
-  const state = r.finished ? t("完走らしい") : t("中断らしい");
-  const car = r.car ? `${t(" ・ ")}${r.car}${r.setup ? ` ${r.setup}` : ""}` : "";
-  return t("{no}. {time} {course}{car}({state})", { no: i + 1, time: fmtTime(r.t0), course: r.course || t("コース不明"), car, state: (r.restart ? t("リスタート・") : "") + state });
-}
-
-function fillRaces(list, keep) {
-  const sel = $("race");
-  const prev = keep ? sel.value : "";
-  races = list;
-  sel.innerHTML = `<option value="">${list.length ? t("全体") : t("レースなし")}</option>`
-    + list.map((r, i) => `<option value="${i}" title="${escapeHtml(t("終えた瞬間 {speed}。{why}", { speed: Units.fmtSpeed(r.endKmh), why: FINISHED_BY[r.finishedBy] || "" }))}">${escapeHtml(raceLabel(r, i))}</option>`).join("");
-  sel.disabled = !list.length;
-  $("exportBtn").disabled = !list.length;
-  sel.value = prev !== "" && prev < list.length ? prev : "";
-  if (sel.value === "") raceRange = null;
-  renderRaceBar();
-}
-
-// ---- 動画の下のレースの帯 ----
-// 動画の全体(動画が無ければ記録の全体)を横に並べ、レースの区間を色、レースの外を灰色で出す。「前 / 次」で止まる所に印、今の位置に線
-
-/** 帯の全体の長さ(秒)。動画の長さ、無ければ記録の最後の時刻 */
-function raceBarSpan() {
-  if (video.src && isFinite(video.duration) && video.duration > 0) return video.duration;
-  return tdata && tdata.t.length ? tdata.t[tdata.t.length - 1] : 0;
-}
-
-function renderRaceBar() {
-  const bar = $("raceBar"), total = raceBarSpan();
-  bar.hidden = !tdata || !(total > 0);
-  if (bar.hidden) return;
-  const pct = (sec) => `${(Math.min(total, Math.max(0, sec)) / total) * 100}%`;
-  const sel = $("race").value;
-  bar.innerHTML = races.map((r, i) => {
-    const w = (Math.max(0, r.t1 - r.t0) / total) * 100;
-    return `<div class="rbRace${String(i) === sel ? " on" : ""}" style="left:${pct(r.t0)};width:${w}%" title="${escapeHtml(raceLabel(r, i))}">${w > 3 ? `<span>${i + 1}</span>` : ""}</div>`;
-  }).join("")
-    + stopPoints().map((p) => `<div class="rbStop${p.lap ? " lap" : ""}" style="left:${pct(p.t)}"></div>`).join("")
-    + `<div class="rbHead"></div>`;
-  moveRaceBarHead(currentSec());
-}
-
-function moveRaceBarHead(sec) {
-  const head = document.querySelector("#raceBar .rbHead"), total = raceBarSpan();
-  if (head && total > 0) head.style.left = `${(Math.min(total, Math.max(0, sec)) / total) * 100}%`;
-}
-
-// 帯のクリック・ドラッグ: その位置へ(グラフもその位置に合わせる)
-$("raceBar").addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return;
-  e.preventDefault();
-  const bar = $("raceBar");
-  const at = (clientX) => {
-    const b = bar.getBoundingClientRect(), total = raceBarSpan();
-    return (Math.min(b.width, Math.max(0, clientX - b.left)) / Math.max(1, b.width)) * total;
-  };
-  let frame = 0, lastX = e.clientX;
-  const go = () => { frame = 0; const sec = at(lastX); seek(sec); followTo(sec, true); };
-  go();
-  const move = (ev) => { lastX = ev.clientX; if (!frame) frame = requestAnimationFrame(go); };
-  const up = () => {
-    window.removeEventListener("mousemove", move);
-    window.removeEventListener("mouseup", up);
-    if (frame) { cancelAnimationFrame(frame); go(); }
-  };
-  window.addEventListener("mousemove", move);
-  window.addEventListener("mouseup", up);
-});
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
-function leaveRace() {
-  raceRange = null;
-  $("race").value = "";
-  renderRaceBar();
-  updateRaceNamesBtn();
-}
-
-// 表示幅のボタン: 時間ではレースを選んでいる間はどれも選ばない(レースの範囲を出すため)。距離では今の表示幅を選ぶ
-function markSpan() {
-  for (const o of document.querySelectorAll("#spans button")) {
-    o.classList.toggle("on", (axis === "dist" || !raceRange) && Number(o.dataset.span) === span);
-  }
-}
-
-/**
- * 距離のときの 1 秒あたりの距離(m/s)= レースの全長 ÷ レースの長さ(秒)。
- * 時間軸で「レースの長さのうち何割を出しているか」を、そのまま距離に当てはめるための比(速度によらず一定)
- */
-function distPerSec() {
-  const r = selectedRace();
-  if (!r || !distMap || distMap.d.length < 2) return null;
-  const sec = r.t1 - r.t0;
-  const len = distMap.d[distMap.d.length - 1] - distMap.d[0];
-  return sec > 0 && len > 0 ? len / sec : null;
-}
-
-/** 距離のときの表示幅(m)。表示幅が「全体」なら null(レース全体を出す) */
-function distSpanWidth() {
-  const k = distPerSec();
-  return span > 0 && k ? span * k : null;
-}
-
-$("race").onchange = (e) => {
-  logEvent(`レースを選んだ: ${e.target.value === "" ? "全体" : Number(e.target.value) + 1}`);
-  if (e.target.value === "") {
-    raceRange = null;
-    // 距離は 1 つのレースについてなので、「全体」にしたら横軸は時間に戻す
-    if (axis === "dist") axis = "time";
-    renderAxis(null);
-    followTo(currentSec(), true);
-    return;
-  }
-  const r = races[Number(e.target.value)];
-  const t = setRaceRange(r);
-  renderAxis(null);
-  seek(t);
-  followTo(t, true);
-  e.target.blur();   // 選んだ後の ← → や Space を、選択の切り替えではなく再生の操作にする
-};
-
-const selectedRace = () => ($("race").value === "" ? null : races[Number($("race").value)]);
-
-/** レースの範囲(スタートの 3 秒前から、終わりの 3 秒後まで)を表示範囲にする。スタートの 3 秒前の時刻を返す */
-function setRaceRange(r) {
-  const t = Math.max(0, r.t0 - START_LEAD_SEC);
-  raceRange = { min: t, max: r.t1 + START_LEAD_SEC };
-  return t;
-}
-
-/**
- * レースを選んでいるとき、再生位置が別のレースに入ったら、選択とグラフ・コース図をそのレースに切り替える
- * (続けて何本も走った記録で、次のレースが始まっても前のレースのグラフのままにならないように)。
- * 位置が属するレース = スタートの 3 秒前を過ぎた一番新しいレース。レースとレースの間は前のレースのまま
- */
-function followRace(sec) {
-  const cur = selectedRace();
-  if (!cur || races.length < 2) return;
-  let owner = null;
-  for (const r of races) if (r.t0 - START_LEAD_SEC <= sec) owner = r;
-  if (!owner || owner === cur) return;
-  const i = races.indexOf(owner);
-  $("race").value = String(i);
-  setRaceRange(owner);
-  renderAxis(null);
-  toast(t("{n} レース目に切り替えました", { n: i + 1 }));
-}
-
-// ---- レースの名前(コース名・車名・セッティング名) ----
-// 記録アプリの「直前のレース」の直し方と同じ。保存は C# で(session.json の race_edited と、登録の受け渡し用のファイル)
-
-function updateRaceNamesBtn() {
-  $("raceNamesBtn").disabled = !selectedRace() || isPackage || !!altInfo;
-  $("addVideoBtn").disabled = !canAddVideo || !!altInfo;
-}
-
-$("raceNamesBtn").onclick = () => {
-  const r = selectedRace();
-  if (!r) return;
-  host.postMessage({ type: "raceNamesForm", race: races.indexOf(r) });
-};
-
-let rnForm = null;   // C# から届いたダイアログの中身
-
-function fillSelect(sel, items, value) {
-  sel.innerHTML = items.map(([v, label]) => `<option value="${escapeHtml(v)}">${escapeHtml(label)}</option>`).join("");
-  sel.value = value;
-}
-
-/** 名前を付けるダイアログを開く(m = C# の raceNamesForm) */
-let rnAssists = null;   // 開いたときの補助の設定(変えたかどうかを見る)
-const RN_ASSIST_KEYS = ["abs", "tcs", "stm", "lc", "shift"];
-const RN_ASSIST_IDS = { abs: "rnAbs", tcs: "rnTcs", stm: "rnStm", lc: "rnLc", shift: "rnShift" };
-function openRaceNames(m) {
-  rnForm = m;
-  const r = races[m.race];
-  $("rnRace").textContent = r ? raceLabel(r, m.race) : "";
-  const c = m.course;
-  // コース: 登録済み(スタートの位置で一致したものに印)と「新しく登録」。一致したものが無ければ「新しく登録」を選ぶ
-  fillSelect($("rnCourse"),
-    c.list.map((x) => [x.id, x.id === c.matchId ? t("{name}(スタートの位置が一致)", { name: x.name }) : x.name]).concat([["new", t("(新しく登録)")]]),
-    c.matchId || "new");
-  $("rnCourseName").value = c.matchId ? (c.list.find((x) => x.id === c.matchId)?.name || "") : (c.current || "");
-  onCourseChoice();
-  // 車: 車種の名前と、同じ組のセッティング
-  $("rnCarBox").hidden = !m.car;
-  if (m.car) {
-    $("rnSig").textContent = m.car.sig;
-    $("rnCarName").value = m.car.registered || m.car.current || "";
-    const cur = m.car.setups.find((x) => x.name === m.car.setup);
-    fillSelect($("rnSetup"),
-      [["", t("(付けない)")]].concat(m.car.setups.map((x) => [x.id, x.name])).concat([["new", t("(新しく登録)")]]),
-      cur ? cur.id : (m.car.setups.length ? m.car.setups[m.car.setups.length - 1].id : ""));
-    onSetupChoice();
-  }
-  // 補助の設定: 今の設定(session.json の race_edited の assists)。変えたときだけ保存する
-  const a = Measure.data && Measure.data.races[m.race] ? Measure.data.races[m.race].assists : null;
-  rnAssists = {};
-  for (const k of RN_ASSIST_KEYS) { rnAssists[k] = (a && a[k]) || ""; $(RN_ASSIST_IDS[k]).value = rnAssists[k]; }
-  $("rnError").hidden = !m.reason;
-  $("rnError").textContent = m.reason || "";
-  $("rnSave").disabled = !m.editable;
-  $("raceNamesDlg").showModal();
-}
-
-function onCourseChoice() {
-  const v = $("rnCourse").value, c = rnForm.course;
-  const isNew = v === "new";
-  $("rnKind").hidden = !isNew;
-  if (!isNew) $("rnCourseName").value = c.list.find((x) => x.id === v)?.name || "";
-  else if (!$("rnCourseName").value) $("rnCourseName").value = c.current || "";
-  $("rnCourseNote").textContent = isNew
-    ? t("新しいコースとして、このレースのスタートの位置と向きで登録します(次からはスタートの位置で見分けます)")
-    : t("名前を書き換えると、登録しているコースの名前そのものが変わります");
-}
-
-function onSetupChoice() {
-  const v = $("rnSetup").value;
-  $("rnSetupName").hidden = v === "";
-  if (v !== "new" && v !== "") $("rnSetupName").value = rnForm.car.setups.find((x) => x.id === v)?.name || "";
-  else if (v === "new") $("rnSetupName").value = "";
-}
-
-$("rnCourse").onchange = onCourseChoice;
-$("rnSetup").onchange = onSetupChoice;
-$("rnCancel").onclick = () => $("raceNamesDlg").close();
-$("rnSave").onclick = () => {
-  const courseId = $("rnCourse").value;
-  const courseName = $("rnCourseName").value.trim();
-  if (courseId === "new" && !courseName) {
-    $("rnError").textContent = t("レース名を入れてください");
-    $("rnError").hidden = false;
-    return;
-  }
-  host.postMessage({
-    type: "editRaceNames", race: rnForm.race,
-    courseId, courseName, courseKind: courseId === "new" ? $("rnKind").value : null,
-    carName: rnForm.car ? $("rnCarName").value.trim() : null,
-    setupId: rnForm.car ? $("rnSetup").value : null,
-    setupName: rnForm.car ? $("rnSetupName").value.trim() : null,
-    // 補助の設定は、変えたときだけ送る(付けていないレースに、分からないを書き足さない)
-    assists: RN_ASSIST_KEYS.some((k) => $(RN_ASSIST_IDS[k]).value !== rnAssists[k])
-      ? Object.fromEntries(RN_ASSIST_KEYS.map((k) => [k, $(RN_ASSIST_IDS[k]).value || null])) : null,
-  });
-  logEvent(`レースの名前を保存: ${rnForm.race + 1} レース目`);
-  $("raceNamesDlg").close();
-};
-
-// ---- 横軸(時間 / 距離) ----
-
-$("axis").onchange = (e) => {
-  logEvent(`横軸: ${e.target.value}`);
-  axis = e.target.value;   // この記録の中だけ(開いたときの横軸は設定のダイアログで)
-  const had = selectedRace();
-  renderAxis(null);
-  // 「全体」から距離にして 1 レース目を選んだとき、今の位置がそのレースの外ならスタートの 3 秒前へ
-  const r = selectedRace();
-  if (!had && r && (currentSec() < r.t0 - START_LEAD_SEC || currentSec() > r.t1)) {
-    const t = Math.max(0, r.t0 - START_LEAD_SEC);
-    seek(t);
-    followTo(t, true);
-  }
-  e.target.blur();
-};
-
-function fmtDist(m) {
-  return Units.fmtDist(m);
-}
-
-/** 横軸を今の設定(時間 / 距離、選んでいるレース)で作り直す。keepRange があればその範囲を保つ */
-function renderAxis(keepRange) {
-  if (!tdata) return;
-  let r = selectedRace();
-  if (axis === "dist" && !r) {
-    // 距離は 1 つのレースについて。「全体」のままなら 1 レース目を選ぶ(レースが無ければ時間)
-    if (races.length) {
-      $("race").value = "0";
-      r = races[0];
-      setRaceRange(r);
-    } else {
-      axis = "time";
-    }
-  }
-  $("axis").value = axis;
-  $("axis").disabled = !races.length;
-  // 荷重移動の基準は選んでいるレースで決まるので、グラフの系列(前後の荷重・左右の荷重)より先に作る
-  FrictionCircle.setRows(tdata, r ? r.dist.i : null, tmarks);
-  const ls = FrictionCircle.loadSeries();
-  tdata.loadLong = ls.long;
-  tdata.loadLat = ls.lat;
-  tdata.grip = FrictionCircle.gripSeries();
-  if (axis === "dist") {
-    distMap = buildDistMap(r);
-    Graphs.setData(distView(), distMarks(tmarks));
-    Graphs.fmtX = fmtDist;
-    Graphs.xTicks = (min, max, count) => Units.distTicks(min, max, count);
-    Graphs.xToSec = distToSec;
-  } else {
-    distMap = null;
-    Graphs.setData(tdata, tmarks);
-    Graphs.fmtX = fmtTime;
-    Graphs.xTicks = null;
-    Graphs.xToSec = (x) => x;
-  }
-  Graphs.elevRange = elevRange(r ? r.dist.i : null);
-  Graphs.build();
-  markSpan();
-  updateRaceNamesBtn();
-  CourseMap.setRows(tdata, r ? r.dist.i : null, cutRows, surfaceColors);
-  FrictionCircle.setLimits(measureLimits(selectedRaceIndex()));
-  PowerChart.setData(tdata);
-  showShifts(r);
-  renderMeasure();
-  if (view3d) CourseView3D.setRows(tdata, r ? r.dist.i : null, cutRows, surfaceColors);
-  if (keepRange) Graphs.setRange(keepRange.min, keepRange.max);
-  else followTo(currentSec(), true);
-  updatePointer(currentSec());
-  renderRaceBar();   // 選んでいるレースを明るく
-}
-
-/**
- * 距離の対応表。all: 系列の位置 → 距離(やり直した走りも含む。ポインター用)、kept: 最後まで残った走りだけ(印用)、
- * pos / d: グラフに出す行(残った走りで、距離が前の行より大きいもの)
- */
-function buildDistMap(race) {
-  const n = tdata.t.length;
-  const all = new Float64Array(n).fill(NaN), kept = new Float64Array(n).fill(NaN);
-  const pos = [], d = [];
-  let last = -Infinity;
-  const { i, d: dd, k } = race.dist;
-  for (let j = 0; j < i.length; j++) {
-    all[i[j]] = dd[j];
-    if (!k[j]) continue;
-    kept[i[j]] = dd[j];
-    if (dd[j] > last) { pos.push(i[j]); d.push(dd[j]); last = dd[j]; }
-  }
-  return { all, kept, pos, d };
-}
-
-/** 横軸を距離にした系列(グラフに出す行だけを抜き出す) */
-function distView() {
-  const v = { t: distMap.d };
-  for (const [key, col] of Object.entries(tdata)) {
-    if (key === "t") continue;
-    if (key === "surface") {
-      v.surface = {};
-      for (const [w, c] of Object.entries(col)) v.surface[w] = distMap.pos.map((p) => c[p]);
-    } else {
-      v[key] = distMap.pos.map((p) => col[p]);
-    }
-  }
-  return v;
-}
-
-/** 動画の秒 → 横軸の値(時間ならそのまま、距離ならその行の距離。レースの外は NaN) */
-function xOf(sec) {
-  if (axis !== "dist" || !distMap) return sec;
-  const p = indexAt(sec);
-  return p < 0 ? NaN : distMap.all[p];
-}
-
-/** 距離 → その距離を通った時刻(最後まで残った走りで) */
-function distToSec(x) {
-  const d = distMap.d;
-  let lo = 0, hi = d.length - 1;
-  while (lo < hi) { const m = (lo + hi) >> 1; if (d[m] < x) lo = m + 1; else hi = m; }
-  return tdata.t[distMap.pos[lo]];
-}
-
-/** その時刻に一番近い、距離のある行の距離(停止区間の中なら、明けて走りに戻った所。無ければ手前) */
-function nearestDist(sec) {
-  const p = indexAt(sec);
-  if (p < 0) return NaN;
-  const all = distMap.all;
-  for (let q = p; q < all.length; q++) if (isFinite(all[q])) return all[q];
-  for (let q = p - 1; q >= 0; q--) if (isFinite(all[q])) return all[q];
-  return NaN;
-}
-
-/** 最後まで残った走りでの、その時刻の距離。やり直した走りの中なら NaN */
-function keptAt(sec) {
-  const p = indexAt(sec);
-  if (p < 0) return NaN;
-  const v = distMap.kept[p];
-  return isFinite(v) ? v : (p + 1 < distMap.kept.length ? distMap.kept[p + 1] : NaN);
-}
-
-/** 印を距離に直す(元の時刻は src_ に残す)。やり直した走りの中の印は出さない */
-function distMarks(mk) {
-  const conv = (m, need, opt = []) => {
-    const o = { ...m };
-    for (const key of need) {
-      const v = keptAt(m[key]);
-      if (!isFinite(v)) return null;
-      o[key] = v;
-      o["src_" + key] = m[key];
-    }
-    for (const key of opt) {
-      if (m[key] == null) continue;
-      const v = keptAt(m[key]);
-      o["src_" + key] = m[key];
-      o[key] = isFinite(v) ? v : null;
-    }
-    return o;
-  };
-  const list = (arr, need, opt) => (arr || []).map((m) => conv(m, need, opt)).filter(Boolean);
-  return {
-    ...mk,
-    starts: list(mk.starts, ["t"]),
-    contacts: list(mk.contacts, ["t"]),
-    laps: list(mk.laps, ["t"]),
-    jumps: list(mk.jumps, ["t0", "t1"]),
-    shifts: list(mk.shifts, ["t"]),
-    excursions: list(mk.excursions, ["t0", "t1"], ["slipT", "slipEndT"]),
-    skips: [],   // やり直した走りは距離軸に出さない
-  };
-}
-
-/** 標高の段の上下は、この幅(m)より狭くしない(都内など標高差の小さいコースで、小さな凹凸を大げさに見せない) */
-const ELEV_MIN_SPAN_M = 50;
-
-/** 標高の段の上下: コース(rows。null なら記録全体の走行中)の最低〜最高に 5% の余白。50m 未満なら真ん中を中心に 50m */
-function elevRange(rows) {
-  const e = tdata.elev;
-  let lo = Infinity, hi = -Infinity;
-  const each = rows || e.keys();
-  for (const i of each) {
-    const v = e[i];
-    if (v == null) continue;
-    if (v < lo) lo = v;
-    if (v > hi) hi = v;
-  }
-  if (!isFinite(lo)) return null;
-  const span = hi - lo;
-  if (span < ELEV_MIN_SPAN_M) {
-    const c = (lo + hi) / 2;
-    return [Math.floor(c - ELEV_MIN_SPAN_M / 2), Math.ceil(c + ELEV_MIN_SPAN_M / 2)];
-  }
-  return [Math.floor(lo - span * 0.05), Math.ceil(hi + span * 0.05)];
-}
-
-// ---- コース図 ----
-
-CourseMap.init($("map"));
-FrictionCircle.trailSec = settings.ggTrail;
-FrictionCircle.cloud = settings.ggCloud;
-FrictionCircle.smoothSec = settings.ltSmooth;
-FrictionCircle.kind = (settings.viewMode === "perf" ? settings.mapModePerf : settings.mapMode) === "gg" ? "gg" : "load";
-FrictionCircle.init($("gg"));
-// コース図の範囲: 全体 / 2km / 1km / 500m / 200m 四方(マイルなら 1mi / 0.5mi / 1500ft / 600ft。全体以外は今の位置を真ん中にして追従)
-/** 範囲のボタンを今の距離の単位で作り直す(全体のボタンはそのまま) */
-function buildMapZoomButtons() {
-  const box = $("mapZoom");
-  for (const b of box.querySelectorAll("button:not([data-zoom='0'])")) b.remove();
-  for (const z of Units.mapZooms()) {
-    const b = document.createElement("button");
-    b.dataset.zoom = z.m;
-    b.textContent = z.label;
-    box.appendChild(b);
-  }
-  for (const b of box.querySelectorAll("button")) b.onclick = () => setMapZoom(Number(b.dataset.zoom));
-}
-function setMapZoom(m) {
-  settings.mapZoom = m;
-  saveSettings();
-  CourseMap.setZoom(m || null);
-  if (view3d) CourseView3D.setZoom(m || null);
-  for (const b of document.querySelectorAll("#mapZoom button")) b.classList.toggle("on", Number(b.dataset.zoom) === m);
-}
-Units.use(settings);
-buildMapZoomButtons();
-setMapZoom(settings.mapZoom || 0);
-
-// ---- コース図の位置と大きさ ----
-// 右の欄(動画の横)か、グラフの横(右下。起点は画面の右端とグラフの最上段)。
-// グラフの横のときの大きさは設定の幅・高さ(0 ならグラフの高さに合わせた正方形。見えている高さと幅の MAP_AUTO_MAX_W まで)。左下の角のドラッグでも変えられる
-
-const MAP_MIN_PX = 120;
-const MAP_AUTO_MAX_W = 0.35;   // グラフの横のとき、大きさを決めていなければ、グラフとコース図の行の幅のこの割合まで
-/** コース図の場所に今出している要素(2D の canvas、3D の箱、摩擦円の canvas) */
-/** 今のモードのコース図の場所に出すもの(見える化と性能で別に覚える) */
-const mapModeKey = () => (settings.viewMode === "perf" ? "mapModePerf" : "mapMode");
-const curMapMode = () => settings[mapModeKey()];
-/** 荷重移動と摩擦円は、同じ図(FrictionCircle)の描き分け */
-const isGgMode = (mode) => mode === "gg" || mode === "load";
-const shownMapEl = () => (curMapMode() === "3d" ? $("map3dBox") : isGgMode(curMapMode()) ? $("gg") : $("map"));
-const mapHome = $("mapBox").nextElementSibling;   // 右の欄に戻すときの位置(この要素の前)
-
-function placeMap() {
-  const box = $("mapBox"), dock = $("mapDock");
-  if (settings.mapPos === "graph") {
-    if (box.parentElement !== dock) dock.insertBefore(box, $("mapGrip"));
-    dock.hidden = false;
-    sizeMap();
-  } else {
-    if (box.parentElement !== mapHome.parentElement) mapHome.parentElement.insertBefore(box, mapHome);
-    dock.hidden = true;
-    dock.style.width = "";
-    $("map").style.height = "";
-    $("map3dBox").style.height = "";
-    $("gg").style.height = "";
-  }
-}
-
-/** グラフの横のときの大きさ。w, h を渡せばその大きさ(ドラッグ中)。渡さなければ設定の値か、グラフの高さに合わせた正方形 */
-function sizeMap(w, h) {
-  if (settings.mapPos !== "graph") return;
-  if (w == null || h == null) {
-    // コース図の下の行(2D / 3D、凡例、範囲のボタン)の高さを除いて、グラフの高さに合わせる
-    const shown = shownMapEl();
-    // 段が多いと大きくなりすぎるので、画面に見えている高さと、グラフとコース図の行の幅の MAP_AUTO_MAX_W までにする
-    const zoomRow = $("mapBox").offsetHeight - shown.offsetHeight;
-    const rowW = $("mapDock").parentElement.clientWidth;
-    const visible = document.querySelector("main").clientHeight;
-    const auto = Math.min($("charts").offsetHeight, visible) - zoomRow;
-    h = settings.mapH || Math.max(MAP_MIN_PX, Math.min(auto, rowW * MAP_AUTO_MAX_W));
-    w = settings.mapW || h;
-  }
-  $("mapDock").style.width = `${w}px`;
-  $("map").style.height = `${h}px`;
-  $("map3dBox").style.height = `${h}px`;
-  $("gg").style.height = `${h}px`;
-}
-
-// グラフの段の数や高さが変わったら、合わせる大きさも変わる
-new ResizeObserver(() => sizeMap()).observe($("charts"));
-new ResizeObserver(() => sizeMap()).observe(document.querySelector("main"));   // 窓の高さが変われば、見えている高さも変わる
-
-// 左下の角のドラッグで大きさを変える(右上が起点なので、左へ引くと幅が、下へ引くと高さが増える)
-$("mapGrip").addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  const x0 = e.clientX, y0 = e.clientY;
-  const w0 = $("mapDock").offsetWidth, h0 = shownMapEl().offsetHeight;
-  let w = w0, h = h0;
-  const move = (ev) => {
-    w = Math.max(MAP_MIN_PX, Math.round(w0 - (ev.clientX - x0)));
-    h = Math.max(MAP_MIN_PX, Math.round(h0 + (ev.clientY - y0)));
-    sizeMap(w, h);
-  };
-  const up = () => {
-    document.removeEventListener("mousemove", move);
-    document.removeEventListener("mouseup", up);
-    settings.mapW = w;
-    settings.mapH = h;
-    saveSettings();
-  };
-  document.addEventListener("mousemove", move);
-  document.addEventListener("mouseup", up);
-});
-
-placeMap();
-
-// ---- 2D / 3D と色のモード ----
-
-
-function setMapMode(mode) {
-  if (mode === "3d" && !view3d) {
-    try {
-      view3d = CourseView3D.init($("map3d"), $("map3dOverlay"));
-    } catch (e) {
-      logEvent(`3D のコース図を準備できない: ${e.message}`, "error");
-      view3d = false;
-    }
-    if (!view3d) { toast(t("この PC では 3D のコース図を出せません(WebGL2 が使えない)"), true); mode = "2d"; }
-    else {
-      CourseView3D.onSeekTime = (sec) => seek(sec);
-      CourseView3D.getNow = () => currentSec();
-      CourseView3D.onViewChange = (v) => markMap3dView(v);
-      CourseView3D.view = settings.map3dView;
-      CourseView3D.exaggeration = settings.map3dExag;
-      CourseView3D.colorMode = settings.mapColor;
-      CourseView3D.zoom = settings.mapZoom || null;
-      CourseView3D.followMode = settings.mapFollow;
-      const r = selectedRace();
-      if (tdata) CourseView3D.setRows(tdata, r ? r.dist.i : null, cutRows, surfaceColors);
-    }
-  }
-  settings[mapModeKey()] = mode;
-  saveSettings();
-  syncMapChrome();
-  sizeMap();
-  drawMap(indexAt(pointerSec));
-}
-
-/** 2D / 3D / 荷重移動 / 摩擦円で、出す部品を切り替える(路面の色・区切り・範囲は、コース図だけの部品なので荷重移動・摩擦円では隠す) */
-function syncMapChrome() {
-  const mode = curMapMode(), gg = isGgMode(mode);
-  if (gg && FrictionCircle.kind !== mode) FrictionCircle.setKind(mode);
-  $("map").hidden = mode !== "2d";
-  $("map3dBox").hidden = mode !== "3d";
-  $("gg").hidden = !gg;
-  $("gg").title = mode === "gg"
-    ? t("摩擦円。横軸 = 横 G(右が正)、縦軸 = 前後 G(上 = 加速、下 = ブレーキ)。点は車が押されている向き(体が振られる向きの反対。右コーナーで右、ブレーキで下)。円は、選んでいるレースでその路面に出た加速度の上位 2% の大きさ(車の限界そのものではない)。点がオレンジのときは、スリップが限界(1)を超えている。円の外へ大きく飛ぶのは、壁・着地などタイヤ以外の力")
-    : t("荷重移動。サスペンションの縮みの差で、点は沈んでいる側へ寄る(ブレーキで上 = 前輪、右コーナーで左 = 外側の左のタイヤ)。横軸 = 右の 2 輪 − 左の 2 輪、縦軸 = 前の 2 輪 − 後ろの 2 輪(縮みきるまでの長さに対する %)。まっすぐ一定の速さで走っているときを 0 にする。G より遅れて動くので、ブレーキの抜き方や姿勢の揺れが見える。荷重の量そのものではなく目安(ばね・段差でも変わる)。円は、選んでいるレースでその路面に出た差の上位 2%。点がオレンジのときは、スリップが限界(1)を超えている。円のまわりの 4 本の棒は 4 輪それぞれのサスペンション(タイヤの並び。沈むほど短くなる。白の線 = まっすぐ一定の速さのとき、赤 = 浮きかけ、橙 = 縮み切りに近い)");
-  $("map3dCtl").hidden = mode !== "3d";
-  $("ggCtl").hidden = !gg;
-  $("mapSurface").hidden = gg;
-  $("mapStep").hidden = gg;
-  $("mapZoom").hidden = gg;
-  $("mapLegend").hidden = gg || settings.mapColor !== "surface";
-  for (const b of document.querySelectorAll("[data-mapmode]")) b.classList.toggle("on", b.dataset.mapmode === mode);
-}
-
-function markMap3dView(v) {
-  for (const b of document.querySelectorAll("[data-view]")) b.classList.toggle("on", b.dataset.view === v);
-}
-
-function setMapColor(mode) {
-  settings.mapColor = mode;
-  saveSettings();
-  $("mapSurface").classList.toggle("on", mode === "surface");
-  CourseMap.setColors(surfaceColors, mode);
-  if (view3d) CourseView3D.setColors(surfaceColors, mode);
-  // 凡例(路面の色のとき。摩擦円を出している間は隠す)
-  syncMapChrome();
-  $("mapLegend").innerHTML = [...COURSE_SURFACE.filter(Boolean), COURSE_MIXED]
-    .map((k) => `<i style="background:${rgbCss(k.rgb)}"></i>${k.name}`).join("");
-  drawMap(indexAt(pointerSec));
-}
-
-for (const b of document.querySelectorAll("[data-mapmode]")) b.onclick = () => setMapMode(b.dataset.mapmode);
-
-// 拡大中の追従のしかた: いつも今の位置 / 区間ごとに区切る
-function setMapFollow(mode) {
-  settings.mapFollow = mode;
-  saveSettings();
-  $("mapStep").classList.toggle("on", mode === "step");
-  CourseMap.setFollowMode(mode);
-  if (view3d) CourseView3D.setFollowMode(mode);
-}
-$("mapStep").onclick = () => setMapFollow(settings.mapFollow === "step" ? "live" : "step");
-setMapFollow(settings.mapFollow);
-$("mapSurface").onclick = () => setMapColor(settings.mapColor === "surface" ? "lap" : "surface");
-for (const b of document.querySelectorAll("[data-view]")) {
-  b.onclick = () => {
-    settings.map3dView = b.dataset.view;
-    saveSettings();
-    markMap3dView(b.dataset.view);
-    if (view3d) CourseView3D.setView(b.dataset.view);
-  };
-}
-$("mapExag").value = settings.map3dExag;
-$("mapExag").onchange = (e) => {
-  settings.map3dExag = e.target.value;
-  saveSettings();
-  if (view3d) CourseView3D.setExaggeration(e.target.value === "auto" ? "auto" : Number(e.target.value));
-  e.target.blur();
-};
-markMap3dView(settings.map3dView);
-setMapColor(settings.mapColor);
-setMapMode(curMapMode());
-CourseMap.onSeekTime = (sec) => seek(sec);
-CourseMap.getNow = () => currentSec();
-
-// 摩擦円: 軌跡の長さと点群
-$("ggTrail").value = String(settings.ggTrail);
-if (!$("ggTrail").value) $("ggTrail").value = "3";
-$("ggTrail").onchange = (e) => {
-  settings.ggTrail = Number(e.target.value);
-  saveSettings();
-  FrictionCircle.setTrail(settings.ggTrail);
-  e.target.blur();
-};
-$("ggCloud").classList.toggle("on", settings.ggCloud);
-$("ggCloud").onclick = () => {
-  settings.ggCloud = !settings.ggCloud;
-  saveSettings();
-  $("ggCloud").classList.toggle("on", settings.ggCloud);
-  FrictionCircle.setCloud(settings.ggCloud);
-};
-// 荷重移動・摩擦円: ならす幅。グラフの前後・左右の荷重と摩擦円の % も同じ値なので、見ている範囲のまま作り直す
-$("ltSmooth").value = String(settings.ltSmooth);
-if (!$("ltSmooth").value) $("ltSmooth").value = "0.25";
-$("ltSmooth").onchange = (e) => {
-  settings.ltSmooth = Number(e.target.value);
-  saveSettings();
-  FrictionCircle.smoothSec = settings.ltSmooth;
-  if (tdata) renderAxis(Graphs.xRange()); else FrictionCircle.setSmooth(settings.ltSmooth);
-  updatePointer(pointerSec);
-  e.target.blur();
-};
-
-/** コース図を描く。今いる周を青、グラフに出している範囲(動画の秒)をさらに明るく */
-function drawMap(i) {
-  const r = Graphs.xRange();
-  let t0 = null, t1 = null;
-  if (r) {
-    if (axis === "dist" && distMap) { t0 = distToSec(r.min); t1 = distToSec(r.max); }
-    else { t0 = r.min; t1 = r.max; }
-  }
-  if (settings.viewMode === "perf") PowerChart.draw(i);
-  if (isGgMode(curMapMode())) { FrictionCircle.draw(i); return; }
-  const lap = lapAt(pointerSec);
-  if (curMapMode() === "3d" && view3d) CourseView3D.draw(i, t0, t1, lap ? lap[0] : null, lap ? lap[1] : null);
-  else CourseMap.draw(i, t0, t1, lap ? lap[0] : null, lap ? lap[1] : null);
-}
-
-/** やり直し区間の行(全レースの距離の計算で「最後まで残らなかった」行)。系列の位置ごとに 1 */
-function buildCutRows() {
-  const cut = new Uint8Array(tdata.t.length);
-  for (const r of races) {
-    const { i, k } = r.dist;
-    for (let j = 0; j < i.length; j++) if (!k[j]) cut[i[j]] = 1;
-  }
-  return cut;
-}
-
-/** 今いる周の [始まり, 終わり](動画の秒)。レースの中なら、周のスタートの印で区切る(周の無いレースはレース全体)。レースの外は null */
-function lapAt(sec) {
-  const r = races.find((x) => sec >= x.t0 - START_LEAD_SEC && sec <= x.t1 + START_LEAD_SEC);
-  if (!r) return null;
-  const cuts = ((tmarks && tmarks.laps) || []).map((l) => l.t).filter((t) => t > r.t0 && t < r.t1).sort((a, b) => a - b);
-  let a = r.t0, b = r.t1;
-  for (const t of cuts) {
-    if (t <= sec) a = t; else { b = t; break; }
-  }
-  return [a, b];
-}
-
-// 上の欄の「スキップ ON / OFF」: 押すたびに切り替える。この記録を開いている間だけ(設定には保存しない)
-function setSkip(on) {
-  skipOn = !!on;
-  $("skipNow").textContent = skipOn ? t("スキップ ON") : t("スキップ OFF");
-  $("skipNow").classList.toggle("on", skipOn);
-}
-$("skipNow").onclick = (e) => { setSkip(!skipOn); logEvent(`スキップ: ${skipOn ? "ON" : "OFF"}`); e.target.blur(); };
-
-// ---- コマ送り ----
-
-/** 1 コマ進む / 戻る(一時停止する)。コマの真ん中の時刻へ(境目に止まって前後のコマが出るのを避ける) */
-function frameStep(dir) {
-  if (!video.src) return;
-  video.pause();
-  const f = fps || 1 / frameSec;
-  const now = lastMediaTime ?? video.currentTime;
-  const k = Math.round(now * f);
-  const target = Math.max(0, (k + dir + 0.5) / f);
-  video.currentTime = target;
-  followTo(target, false);
-}
-$("prevFrame").onclick = () => frameStep(-1);
-$("nextFrame").onclick = () => frameStep(1);
-
-// ---- 動画の切り替えと割り当て(録画・リプレイ・別に録った動画。session.json の video_alt) ----
-// 切り替え・割り当て・同期の保存は C# で。切り替えたら、C# が同じ瞬間の位置を "restore" で返す
-
-let altInfo = null;        // 表示している割り当てた動画(録画なら null)
-let canAddVideo = false;   // 動画を割り当てられる記録か(パッケージでなく、記録を終えたもの)
-let hasRecording = false;
-let replayRace = null;     // 自動判別を頼んだレース(記録の中の番号)
-
-const selectedRaceIndex = () => ($("race").value === "" ? null : Number($("race").value));
-
-function fillVideos(m) {
-  altInfo = m.alt || null;
-  canAddVideo = !!m.canAddVideo;
-  hasRecording = !!m.hasRecording;
-  const sel = $("videoSel");
-  const list = m.videos || [];
-  const mark = (v) => (v.status === "missing" ? t("(見つかりません)") : v.status === "changed" ? t("(変わっています)") : "");
-  sel.innerHTML = `<option value="">${escapeHtml(t("録画"))}</option>`
-    + list.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.label + mark(v))}</option>`).join("");
-  sel.value = m.activeVideo || "";
-  sel.disabled = !list.length;
-  $("addVideoBtn").hidden = !canAddVideo;
-  showAlt();
-  updateRaceNamesBtn();
-}
-
-function showAlt() {
-  const a = altInfo;
-  $("altBox").hidden = !a;
-  $("msClear").hidden = !!(a && a.content === "replay");   // リプレイは「探し直す」で戻す
-  if (!a) return;
-  const replay = a.content === "replay";
-  $("aKind").textContent = a.kind === "replay" ? t("録画の中のリプレイ") : replay ? t("別の動画(リプレイ)") : t("別の動画(ライブ走行)");
-  $("aSync").textContent = a.method === "auto_black_motion" ? t("自動(黒い画面と動き)・確度 高(相関 {corr})", { corr: (a.corr ?? 0).toFixed(2) })
-    : a.method === "auto_black" ? t("自動(黒い画面だけ)・確度 低。ゴールの瞬間で確かめてください")
-    : replay ? t("手動(先頭 {sec})", { sec: a.zero == null ? "-" : fmtTime(a.zero) })
-    : a.points ? t("手動({n} 点)", { n: a.points }) : t("まだ合わせていません(「同期の手動補正」で合わせてください)");
-  $("aSync").classList.toggle("warn", a.method === "auto_black" || (!replay && !a.points));
-  $("aReplayRow").hidden = !replay;
-  $("aRedetect").hidden = a.kind !== "replay";
-  // 先頭とゴールの両方があれば、間隔とレースタイムの差で検算
-  const span = replay && a.zero != null && a.end != null && a.duration ? a.end - a.zero : null;
-  $("aCheck").hidden = span == null;
-  if (span != null) {
-    const d = span - a.duration;
-    $("aCheck").textContent = t("先頭からゴールまで {span} 秒(レースタイムとの差 {diff} 秒)", { span: span.toFixed(2), diff: (d >= 0 ? "+" : "") + d.toFixed(2) });
-    $("aCheck").classList.toggle("warn", Math.abs(d) > 0.1);
-  }
-  $("aWarn").hidden = !a.vfr;
-  $("aWarn").textContent = a.vfr ? t("この動画はコマの間隔が一定でない(可変フレームレート)ようです。時刻がずれることがあるので、ゴール付近でも合っているか確かめてください") : "";
-  if (a.id !== nudge.id) { nudge.id = a.id; nudge.total = 0; }
-  showNudge();
-}
-
-// ---- 同期の微調整の小窓 ----
-// グラフ(テレメトリーの瞬間)はそのままで、映像のコマを替える: 映像を delta 秒送り、同じだけ対応をずらす(C# の altNudge)。
-// こうすると、グラフのカーソルが指すテレメトリーの瞬間は変わらず、映像だけが前後のコマになる
-
-const nudge = { id: null, total: 0 };
-const FLOAT_KEY = "heiso.syncFloat.v1";
-let floatState = (() => { try { return JSON.parse(localStorage.getItem(FLOAT_KEY)) || {}; } catch { return {}; } })();
-const saveFloat = () => { try { localStorage.setItem(FLOAT_KEY, JSON.stringify(floatState)); } catch { /* 保存できなくても動く */ } };
-
-function showNudge() {
-  const open = !!altInfo && !floatState.closed;
-  const box = $("syncFloat");
-  const wasHidden = box.hidden;
-  box.hidden = !open;
-  if (open && wasHidden) placeFloat();
-  // リプレイは保存したずらし量(新しく割り当てたときの設定の量を含む)、ライブはこの動画を表示している間にずらした量
-  const ms = altInfo && altInfo.shiftMs != null ? Math.round(altInfo.shiftMs) : Math.round(nudge.total * 1000);
-  // コマの数も出す(その動画のフレームレートで。小数は 1 桁まで)
-  const f = Math.round(Math.abs(ms) * (fps || 1 / frameSec) / 100) / 10;
-  $("sfShift").textContent = ms > 0 ? t("映像を {n} コマ({ms} ms)後ろへずらしました", { n: f, ms })
-    : ms < 0 ? t("映像を {n} コマ({ms} ms)前へずらしました", { n: f, ms: -ms }) : "";
-}
-
-/** 小窓の位置: 覚えていればそこ、無ければ動画の左下。画面の外に出ないように */
-function placeFloat() {
-  const box = $("syncFloat");
-  const vb = $("video").getBoundingClientRect();
-  let x = floatState.x ?? vb.left + 12, y = floatState.y ?? vb.bottom - box.offsetHeight - 60;
-  x = Math.min(Math.max(0, x), innerWidth - box.offsetWidth);
-  y = Math.min(Math.max(0, y), innerHeight - box.offsetHeight);
-  box.style.left = `${x}px`;
-  box.style.top = `${y}px`;
-}
-window.addEventListener("resize", () => { if (!$("syncFloat").hidden) placeFloat(); });
-
-$("sfHead").addEventListener("pointerdown", (e) => {
-  if (e.target.tagName === "BUTTON") return;
-  const box = $("syncFloat"), r = box.getBoundingClientRect();
-  const dx = e.clientX - r.left, dy = e.clientY - r.top;
-  $("sfHead").setPointerCapture(e.pointerId);
-  const move = (ev) => { floatState.x = ev.clientX - dx; floatState.y = ev.clientY - dy; placeFloat(); };
-  const up = () => { $("sfHead").removeEventListener("pointermove", move); $("sfHead").removeEventListener("pointerup", up); saveFloat(); };
-  $("sfHead").addEventListener("pointermove", move);
-  $("sfHead").addEventListener("pointerup", up);
-});
-$("sfClose").onclick = () => { floatState.closed = true; saveFloat(); showNudge(); };
-$("aFloatOpen").onclick = () => { floatState.closed = false; saveFloat(); showNudge(); };
-
-/** 映像を v("1f" = 1 コマ、"0.1" = 0.1 秒。負なら前)だけ送り、同じだけ対応をずらす(グラフのカーソルの瞬間はそのまま) */
-function nudgeBy(v) {
-  if (!altInfo || !video.src) return;
-  const delta = v.endsWith("f") ? Number(v.slice(0, -1)) * frameSec : Number(v);
-  video.pause();
-  const target = video.currentTime + delta;
-  if (target < 0) return;
-  nudge.total += delta;
-  video.currentTime = target;
-  host.postMessage({ type: "altNudge", delta });
-  showNudge();
-}
-for (const b of document.querySelectorAll("#sfNudge button")) b.onclick = () => nudgeBy(b.dataset.nudge);
-
-/** 前・次のブレーキの踏み始め(0 → 踏む)か変速(ギアが変わる動作の始まり)へ、グラフのカーソルと映像を移す */
-function jumpEvent(kind, dir) {
-  if (!tdata) return;
-  const tt = tdata.t, list = [];
-  if (kind === "brake") {
-    const b = tdata.brake;
-    for (let i = 1; i < tt.length; i++) if (b[i] != null && b[i] > 0 && b[i - 1] === 0) list.push(tt[i]);
-  } else {
-    // 変速: ギアの値が途切れた(変速動作中 = null)所。走行中(速度あり)だけ
-    const g = tdata.gear, sp = tdata.speed;
-    for (let i = 1; i < tt.length; i++) if (g[i] == null && g[i - 1] != null && sp[i] != null && sp[i] > 5) list.push(tt[i]);
-  }
-  const now = currentSec(), eps = 0.02;
-  const target = dir > 0 ? list.find((x) => x > now + eps) : [...list].reverse().find((x) => x < now - eps);
-  if (target == null) { toast(t("この先にはありません")); return; }
-  video.pause();
-  seek(target);
-  followTo(target, true);
-  updatePointer(target);
-}
-for (const b of document.querySelectorAll("#syncFloat [data-jump]")) b.onclick = () => jumpEvent(b.dataset.jump, Number(b.dataset.dir));
-
-$("videoSel").onchange = (e) => {
-  const id = e.target.value || null;
-  logEvent(`動画を切り替える: ${id || "録画"}`);
-  host.postMessage({ type: "selectVideo", id, sec: currentSec(), race: selectedRaceIndex() });
-  e.target.blur();
-};
-
-function onVideoMissing(m) {
-  $("videoSel").value = m.active || "";
-  const q = m.changed ? t("動画が、割り当てたときと変わっています(大きさか長さが違います)。動画を選び直しますか?")
-    : t("動画が見つかりません(移動したか、消したかもしれません)。動画を選び直しますか?");
-  if (confirm(q)) host.postMessage({ type: "relinkVideo", id: m.id, sec: currentSec(), race: selectedRaceIndex() });
-}
-
-$("addVideoBtn").onclick = () => {
-  const r = selectedRace();
-  if (!r) { toast(t("動画を割り当てるレースを、上の「レース」で選んでください"), true); return; }
-  $("avRace").textContent = raceLabel(r, races.indexOf(r));
-  $("avAuto").disabled = !hasRecording;
-  $("avAutoNote").classList.toggle("warn", !hasRecording);
-  $("addVideoDlg").showModal();
-};
-$("avCancel").onclick = () => $("addVideoDlg").close();
-$("avAuto").onclick = () => {
-  $("addVideoDlg").close();
-  logEvent("リプレイを探す: 全部のレース");
-  host.postMessage({ type: "addReplayAuto", race: selectedRaceIndex() });
-};
-for (const [id, content] of [["avLive", "live"], ["avReplay", "replay"]]) {
-  $(id).onclick = () => {
-    $("addVideoDlg").close();
-    host.postMessage({ type: "addVideoFile", content, race: selectedRaceIndex(), sec: currentSec() });
-  };
-}
-
-/** 自動判別の結果(レースごと)。見つかったレースに「採用」を出す。手動で合わせるのは、選んでいるレース(無ければ結果の最後のレース) */
-function onReplayFound(m) {
-  const list = m.results || [];
-  replayRace = m.selected ?? (list.length ? list[list.length - 1].race : null);
-  $("rfRace").textContent = "";
-  const box = $("rfList");
-  box.innerHTML = "";
-  for (const r of list) {
-    const row = document.createElement("div");
-    row.className = "rfRow" + (r.found ? " found" : "");
-    const head = document.createElement("div");
-    head.className = "rfHead";
-    head.textContent = races[r.race] ? raceLabel(races[r.race], r.race) : t("{n} レース目", { n: r.race + 1 });
-    const text = document.createElement("div");
-    text.className = "rfText";
-    text.textContent = r.found
-      ? t("リプレイを見つけました: 動画の {zero} から {end} まで(レースタイム {len} 秒)。確度: {conf}", {
-        zero: fmtTime(r.zero), end: fmtTime(r.end), len: r.duration.toFixed(2),
-        conf: r.confidence === "high" ? t("高(動きの相関 {corr})", { corr: (r.corr ?? 0).toFixed(2) }) : t("低(切り替えた後、ゴールの瞬間で確かめてください)"),
-      })
-      : t("このレースの後にはリプレイがありません");
-    row.append(head, text);
-    if (r.warning) {
-      const w = document.createElement("div");
-      w.className = "error";
-      w.textContent = r.warning;
-      row.append(w);
-    }
-    if (r.found) {
-      const b = document.createElement("button");
-      b.className = "cmd primary";
-      b.textContent = t("採用");
-      b.onclick = () => {
-        $("replayFoundDlg").close();
-        // 割り当てた後、「同期の微調整」の小窓を出す(設定の量だけ前へずらした状態を見せる)
-        floatState.closed = false;
-        saveFloat();
-        host.postMessage({ type: "adoptReplay", manual: false, sec: currentSec(), race: r.race });
-      };
-      row.append(b);
-    }
-    box.append(row);
-  }
-  if (!list.some((r) => r.found)) {
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = t("どのレースの後にも、リプレイの終わりの黒い画面が見つかりませんでした。手動で合わせることはできます。");
-    box.append(p);
-  }
-  $("rfManual").hidden = replayRace == null;
-  $("rfManual").textContent = replayRace == null ? t("手動で合わせる") : t("{n} レース目に手動で合わせる", { n: replayRace + 1 });
-  $("replayFoundDlg").showModal();
-}
-$("rfCancel").onclick = () => $("replayFoundDlg").close();
-$("rfManual").onclick = () => {
-  $("replayFoundDlg").close();
-  if (replayRace != null) host.postMessage({ type: "adoptReplay", manual: true, sec: currentSec(), race: replayRace });
-};
-
-$("aZero").onclick = () => {
-  if (!video.src) return;
-  video.pause();
-  host.postMessage({ type: "altMark", what: "zero", sec: lastMediaTime ?? video.currentTime });
-};
-$("aEnd").onclick = () => {
-  if (!video.src) return;
-  video.pause();
-  host.postMessage({ type: "altMark", what: "end", sec: lastMediaTime ?? video.currentTime });
-};
-$("aGoFinish").onclick = () => {
-  // リプレイはレースが 1 本だけ。ライブは割り当てたレース
-  const r = races[altInfo && altInfo.content !== "replay" ? altInfo.race : 0];
-  if (!r || r.tf == null) return;
-  video.pause();
-  seek(r.tf);
-  followTo(r.tf, true);
-};
-$("aRedetect").onclick = () => {
-  if (!altInfo) return;
-  replayRace = altInfo.race;
-  host.postMessage({ type: "addReplayAuto", only: altInfo.race, race: altInfo.race });
-};
-$("aRelink").onclick = () => {
-  if (altInfo) host.postMessage({ type: "relinkVideo", id: altInfo.id, sec: currentSec(), race: selectedRaceIndex() });
-};
-$("aRemove").onclick = () => {
-  if (altInfo && confirm(t("この動画の割り当てを外しますか?(動画のファイルは消しません)")))
-    host.postMessage({ type: "removeVideo", id: altInfo.id, sec: currentSec(), race: selectedRaceIndex() });
-};
-
-// ---- リプレイを割り当てたときのずらし量(設定の「同期」。コマ。C# の player.json に保存し、新しく割り当てるときに使う) ----
-
-let replayLeadDefault = 5;
-function setReplayLead(frames) {
-  if (!Number.isFinite(frames)) return;
-  frames = Math.max(-60, Math.min(60, Math.round(frames)));
-  $("sReplayLead").value = frames;
-  logEvent(`リプレイを割り当てたときのずらし量: 前へ ${frames} コマ`);
-  host.postMessage({ type: "setReplayLead", frames });
-}
-$("sReplayLead").onchange = () => setReplayLead(Number($("sReplayLead").value));
-$("sReplayLeadReset").onclick = () => setReplayLead(replayLeadDefault);
-
-// ---- 同期の手動補正 ----
-// 映像のコマの秒(このコマを使う)と、グラフで指した瞬間(今の変換での動画の秒)を C# に送り、
-// C# がテレメトリー時刻に直して session.json の video.manual_sync に足す
-
-const ms = { frame: null, graph: null };
-
-function renderManual() {
-  $("msFrameText").textContent = ms.frame == null ? "-" : t("映像 {time}({frac})", { time: fmtTime(ms.frame), frac: (ms.frame % 1).toFixed(3).slice(1) });
-  $("msPickText").textContent = Graphs.pickMode ? t("グラフをクリックしてください")
-    : ms.graph == null ? "-" : t("グラフ {time}({frac})", { time: fmtTime(ms.graph), frac: (ms.graph % 1).toFixed(3).slice(1) });
-  $("msPick").classList.toggle("on", Graphs.pickMode);
-  $("charts").classList.toggle("picking", Graphs.pickMode);
-  const ok = ms.frame != null && ms.graph != null;
-  const diff = ok ? ms.frame - ms.graph : null;
-  $("msDiff").textContent = !ok ? ""
-    : Math.abs(diff) < 0.0005 ? t("ずれはありません")
-    : diff > 0 ? t("グラフを {sec} 秒後ろへずらして映像に合わせます(約 {frames} コマ)", { sec: Math.abs(diff).toFixed(3), frames: Math.round(Math.abs(diff) / frameSec) })
-      : t("グラフを {sec} 秒前へずらして映像に合わせます(約 {frames} コマ)", { sec: Math.abs(diff).toFixed(3), frames: Math.round(Math.abs(diff) / frameSec) });
-  $("msSave").disabled = !ok;
-}
-
-$("msFrame").onclick = () => {
-  if (!video.src) return;
-  video.pause();
-  ms.frame = lastMediaTime ?? video.currentTime;
-  renderManual();
-};
-$("msPick").onclick = () => {
-  Graphs.pickMode = !Graphs.pickMode;
-  renderManual();
-};
-Graphs.onPick = (sec) => {
-  Graphs.pickMode = false;
-  ms.graph = sec;
-  renderManual();
-};
-$("msCancel").onclick = () => {
-  ms.frame = ms.graph = null;
-  Graphs.pickMode = false;
-  renderManual();
-};
-$("msSave").onclick = () => {
-  if (ms.frame == null || ms.graph == null) return;
-  host.postMessage({ type: "manualSync", graphSec: ms.graph, videoSec: ms.frame, note: $("msNote").value });
-};
-$("msClear").onclick = () => {
-  if (confirm(t("この記録の手動補正を全部消して、自動の同期に戻しますか?"))) host.postMessage({ type: "clearManualSync" });
-};
-
-function onNotice(m) {
-  toast(m.error || m.message, !!m.error);
-  if (!m.error) {
-    ms.frame = ms.graph = null;
-    $("msNote").value = "";
-    renderManual();
-  }
-}
-
-/** 画面の下に短く知らせる。sec は出しておく秒数(省けばエラー 5 秒、それ以外 2.5 秒) */
-function toast(text, isError, sec) {
-  const t = $("toast");
-  t.textContent = text;
-  t.classList.toggle("error", !!isError);
-  t.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { t.hidden = true; }, sec ? sec * 1000 : isError ? 5000 : 2500);
-}
-
-// 前 / 次の印へ飛ぶ:
-
-// 前 / 次の印へ飛ぶ: スタート(3 秒前。チェックポイント逃しの復帰は 1 秒前)と、周のスタート・ゴール(1 秒前)。
-// 前に印が無ければ動画の先頭へ
-/** 「◀ 前 / 次 ▶」で止まる所(動画の秒、昇順)。{ t, lap(周の印なら true) } */
-function stopPoints() {
-  return [
-    ...(tmarks ? tmarks.starts : []).filter((s) => s.race || Graphs.showLaunches).map((s) => ({ t: s.t - leadOf(s), lap: false })),
-    ...((tmarks && tmarks.laps) || []).map((l) => ({ t: l.t - LAP_LEAD_SEC, lap: true })),
-  ].map((p) => ({ ...p, t: Math.max(0, p.t) })).sort((a, b) => a.t - b.t);
-}
-
-function jumpStart(dir) {
-  const list = stopPoints().map((p) => p.t);
-  const now = currentSec();
-  let target = dir > 0
-    ? list.find((t) => t > now + 0.05)
-    : [...list].reverse().find((t) => t < now - 0.5);
-  if (target == null) {
-    if (dir > 0) return;
-    target = 0;
-  }
-  seek(target);
-  followTo(target, true);
-}
-$("prevStart").onclick = () => jumpStart(-1);
-$("nextStart").onclick = () => jumpStart(1);
-// ---- 設定のダイアログ ----
-
-Graphs.showContacts = settings.contacts;
-Graphs.showLaunches = settings.launches;
-$("method").value = settings.method;
-
-const CHECKS = { sContacts: "contacts", sLaunches: "launches", sAutoStart: "autoStart", sSkipRedo: "skipRedo" };
-for (const [id, key] of Object.entries(CHECKS)) {
-  $(id).onchange = (e) => {
-    settings[key] = e.target.checked;
-    saveSettings();
-    if (key === "skipRedo") setSkip(settings.skipRedo);
-    Graphs.showContacts = settings.contacts;
-    Graphs.showLaunches = settings.launches;
-    Graphs.redrawMarks();
-    renderRaceBar();   // 「前 / 次」で止まる所が変わる
-  };
-}
-
-// 記録を開いたときの表示(範囲・横軸)。次に開く記録から使う
-for (const [name, key] of [["sView", "view"], ["sAxis", "axis"]]) {
-  for (const r of document.querySelectorAll(`input[name=${name}]`)) {
-    r.onchange = () => { if (r.checked) { settings[key] = r.value; saveSettings(); } };
-  }
-}
-
-// 単位(速度・距離・標高)。変えたら、グラフ・読み取り値・コース図・レースの一覧をすぐ直す
-for (const [name, key] of [["sUnitSpeed", "unitSpeed"], ["sUnitDist", "unitDist"], ["sUnitElev", "unitElev"]]) {
-  for (const r of document.querySelectorAll(`input[name=${name}]`)) {
-    r.onchange = () => {
-      if (!r.checked) return;
-      settings[key] = r.value;
-      saveSettings();
-      applyUnits();
-    };
-  }
-}
-function applyUnits() {
-  const oldDist = Units.dist;
-  Units.use(settings);
-  buildMapZoomButtons();
-  if (Units.dist !== oldDist && settings.mapZoom) {
-    // 範囲は、いちばん近い長さのボタンに合わせる
-    const near = Units.mapZooms().reduce((a, b) => (Math.abs(b.m - settings.mapZoom) < Math.abs(a.m - settings.mapZoom) ? b : a));
-    setMapZoom(near.m);
-  } else {
-    setMapZoom(settings.mapZoom || 0);
-  }
-  if (tdata) {
-    const range = Graphs.xRange();
-    Graphs.build();
-    if (range) Graphs.setRange(range.min, range.max);
-    fillRaces(races, true);
-    updatePointer(pointerSec);
-  }
-}
-
-// コース図の位置と大きさ
-for (const r of document.querySelectorAll("input[name=sMapPos]")) {
-  r.onchange = () => { if (r.checked) { settings.mapPos = r.value; saveSettings(); placeMap(); } };
-}
-for (const [id, key] of [["sMapW", "mapW"], ["sMapH", "mapH"]]) {
-  $(id).onchange = (e) => {
-    const v = Math.round(Number(e.target.value) || 0);
-    settings[key] = v > 0 ? Math.max(MAP_MIN_PX, v) : 0;
-    e.target.value = settings[key];
-    saveSettings();
-    sizeMap();
-  };
-}
-$("sMapAuto").onclick = () => {
-  settings.mapW = settings.mapH = 0;
-  saveSettings();
-  $("sMapW").value = $("sMapH").value = 0;
-  sizeMap();
-};
-
-// ウィンドウの大きさと位置を覚えるか(C# 側の player.json に持つ)
-let rememberWindow = false;
-$("sRememberWindow").onchange = (e) => {
-  rememberWindow = e.target.checked;
-  host.postMessage({ type: "rememberWindow", on: rememberWindow });
-};
-
-$("settingsBtn").onclick = () => {
-  for (const [id, key] of Object.entries(CHECKS)) $(id).checked = settings[key];
-  for (const r of document.querySelectorAll("input[name=sMapPos]")) r.checked = r.value === settings.mapPos;
-  $("sMapW").value = settings.mapW;
-  $("sMapH").value = settings.mapH;
-  $("sRememberWindow").checked = rememberWindow;
-  for (const r of document.querySelectorAll("input[name=sView]")) r.checked = r.value === settings.view;
-  for (const r of document.querySelectorAll("input[name=sAxis]")) r.checked = r.value === settings.axis;
-  for (const [name, key] of [["sUnitSpeed", "unitSpeed"], ["sUnitDist", "unitDist"], ["sUnitElev", "unitElev"]]) {
-    for (const r of document.querySelectorAll(`input[name=${name}]`)) r.checked = r.value === settings[key];
-  }
-  $("method").value = settings.method;
-  showSettingsTab(settings.settingsTab);
-  host.postMessage({ type: "probeFfmpeg" });   // 「書き出し」タブの ffmpeg の状態
-  $("settingsDlg").showModal();
-  renderSettings();
-};
-
-/** 設定のダイアログのタブ(グラフ / 画面 / 再生 / 同期)。選んだタブの section だけを出し、最後に開いたタブを覚える */
-function showSettingsTab(tab) {
-  const tabs = [...document.querySelectorAll("#settingsTabs button")];
-  if (!tabs.some((b) => b.dataset.tab === tab)) tab = tabs[0].dataset.tab;
-  for (const b of tabs) b.classList.toggle("on", b.dataset.tab === tab);
-  for (const s of document.querySelectorAll("#settingsDlg section[data-tab]")) s.hidden = s.dataset.tab !== tab;
-  if (settings.settingsTab !== tab) {
-    settings.settingsTab = tab;
-    saveSettings();
-  }
-}
-for (const b of document.querySelectorAll("#settingsTabs button")) b.onclick = () => showSettingsTab(b.dataset.tab);
-
-// 画面の言語(C# が保存し、辞書を渡し直して画面を読み直す)
-for (const r of document.querySelectorAll("input[name=sLang]")) {
-  r.onchange = () => {
-    if (!r.checked) return;
-    // 読み直した後に同じ位置へ戻すため、今の位置を先に知らせる(ふだんは 2 秒ごとなので、直前に動かした位置が伝わっていないことがある)
-    host.postMessage({ type: "position", sec: video.src ? video.currentTime : pointerSec, playing: false });
-    host.postMessage({ type: "setLanguage", language: r.value });
-  };
-}
-$("settingsClose").onclick = () => $("settingsDlg").close();
-// 枠の外(暗い所)をクリックしても閉じる
-$("settingsDlg").addEventListener("click", (e) => {
-  if (e.target !== $("settingsDlg")) return;   // 中の部品のクリック(外の暗い所をクリックすると、ダイアログそのものに届く)
-  const r = $("settingsDlg").getBoundingClientRect();
-  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) $("settingsDlg").close();
-});
-
-// ---- 表示のモード(見える化 / 性能) ----
-// グラフの段の組み合わせと、コース図の場所に出すもの(2D / 3D / 摩擦円)は、モードごとに最後に使ったものを覚える。
-// 性能モードでは、右の欄にパワーカーブと、読み取り値に回転数・変速の得失を足す(.perfOnly)
-function setViewMode(mode) {
-  settings.viewMode = mode;
-  saveSettings();
-  document.body.classList.toggle("perf", mode === "perf");
-  document.body.classList.toggle("measure", mode === "measure");
-  for (const b of document.querySelectorAll("[data-viewmode]")) b.classList.toggle("on", b.dataset.viewmode === mode);
-  // 計測モードは、グラフの場所にプロファイルの欄を出す(グラフの段の組み合わせは見える化・性能のまま)
-  $("measurePanel").hidden = mode !== "measure";
-  $("charts").hidden = mode === "measure";
-  if (mode === "measure") renderMeasure();
-  else Graphs.setMode(mode);
-  setMapMode(curMapMode());
-  updatePointer(pointerSec);
-}
-
-/**
- * 摩擦円に描く、この車の限界(計測モードの車のプロファイル)。計測モードの欄と同じ車と補助の設定の組(選んでいるレースのもの。全体なら最初の車)の、
- * 路面ごとの { left, right, brake, launch }(測れたものだけ。測れていなければ null)。プロファイルが無ければ null
- */
-function measureLimits(raceIndex) {
-  const d = Measure.data;
-  if (!d || !d.cars || !d.cars.length || !d.races) return null;
-  const race = raceIndex != null ? d.races[raceIndex] : null;
-  const car = d.cars.find((c) => race && c.key === race.car) || d.cars[0];
-  const group = (race && car.groups[race.assistKey]) || car.groups["abs=?,tcs=?,stm=?,lc=?"] || Object.values(car.groups)[0];
-  if (!group || !group.limits) return null;
-  const v = (l) => (l && l.measured ? l.g : null);
-  const out = {};
-  for (const [s, l] of Object.entries(group.limits)) out[s] = { left: v(l.left), right: v(l.right), brake: v(l.brake), launch: v(l.launch) };
-  return out;
-}
-
-/** 計測モードの欄を描く(選んでいるレースの車と、補助の設定の組) */
-function renderMeasure() {
-  if (settings.viewMode === "measure") Measure.render($("measurePanel"), selectedRaceIndex());
-}
-for (const b of document.querySelectorAll("[data-viewmode]")) b.onclick = () => { setViewMode(b.dataset.viewmode); b.blur(); };
-PowerChart.init($("pw"));
-setViewMode(["perf", "measure"].includes(settings.viewMode) ? settings.viewMode : "vis");
-
-host.postMessage({ type: "ready", method: settings.method });

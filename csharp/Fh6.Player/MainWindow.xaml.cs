@@ -1,26 +1,20 @@
 using System.Diagnostics;
 using System.IO;
-using System.Text.Json;
 using System.Windows;
 using Fh6.Core;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Win32;
-using Registry = Fh6.Core.Registry;   // Microsoft.Win32.Registry と区別する(登録ファイル fh6_registry.json)
 
 namespace Fh6.Player;
 
 /// <summary>
-/// 外枠。画面(動画・グラフ・操作)はすべて wwwroot の HTML/JS で作り、ここはファイルを開くことと、
-/// セッションを読み込んで JS へ渡すことだけを受け持つ。
+/// 外枠。画面(動画・グラフ・操作)はすべて wwwroot の HTML/JS で作り、操作の流れは機能ごとの ViewModel(Fh6.Player.App)が持つ。
+/// ここは WebView2(ページ、仮想ホスト、メッセージの受け渡し、読み直しと立て直し)と、閉じるまで待つ画面と、ウィンドウの位置だけを受け持つ
 /// </summary>
-public partial class MainWindow : Window
+public partial class MainWindow : Window, IShell
 {
-    /// <summary>
-    /// 車のプロファイルの置き場所(計測モード。%LOCALAPPDATA%\HEISO\Player\profiles)。
-    /// 確認用の起動(tools/dev)では HEISO_PLAYER_PROFILES で別のフォルダにする(記録の写しを、利用者のプロファイルに足さないため)
-    /// </summary>
-    private static readonly ProfileStore Profiles = new(Environment.GetEnvironmentVariable("HEISO_PLAYER_PROFILES") is { Length: > 0 } dir ? dir
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "Player", "profiles"));
+    /// <summary>車のプロファイルの置き場所(計測モード)</summary>
+    private static readonly ProfileStore Profiles = new(PlayerPaths.ProfilesDir);
 
     /// <summary>
     /// ウィンドウとメッセージの題名。v0 は 1 本の走りを見る「単走版」として公開する(2 本を並べる並走は v1 から)。
@@ -28,17 +22,16 @@ public partial class MainWindow : Window
     /// </summary>
     public static string AppTitle => $"{Strings.T("HEISO 単走版")} {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}";
 
-    private const string AppHost = "app.heiso";
-    private const string SessionHost = "session.heiso";
-    private const string VideoHost = "video.heiso";
-
-    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-
     private readonly string? _initialPath;
     private readonly PlayerSettings _settings = PlayerSettings.Load();
     private bool _initialOpened;
-    private LoadedSession? _session;
-    private VideoSyncMethod _method = VideoSyncMethod.StartedEvent;
+    private readonly OpenedSessionViewModel _opened;
+    private readonly SessionsViewModel _sessions;
+    private readonly SettingsViewModel _prefs;
+    private readonly VideoViewModel _video;
+    private readonly ExportViewModel _export;
+    private string? _altHostDir;   // alt.heiso に割り当てているフォルダ
+    private readonly JobSlot _job = new();   // 書き出しとリプレイを探す処理の「中止」
 
     // 画面(WebView2 の描画のプロセス)が落ちたときの立て直し: 画面から約 2 秒ごとに届く動画の位置を覚え、読み直した後にそこへ戻す
     private double _lastVideoSec;
@@ -51,6 +44,11 @@ public partial class MainWindow : Window
     {
         _initialPath = initialPath;
         InitializeComponent();
+        _opened = new OpenedSessionViewModel(this, _settings, Profiles, RefreshSession);
+        _sessions = new SessionsViewModel(this, _settings, Profiles, () => _opened.Session?.Folder);
+        _prefs = new SettingsViewModel(this, _settings);
+        _video = new VideoViewModel(this, _settings, _opened, _prefs, _job);
+        _export = new ExportViewModel(this, _settings, _opened, _prefs, _job, _video.ActiveAlt);
         Strings.Use(_settings.Language);
         Title = AppTitle;
         RestorePlacement();
@@ -63,7 +61,7 @@ public partial class MainWindow : Window
         try
         {
             // 既定では exe の隣にキャッシュを作るので、書き込める場所に置く
-            var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "Player", "WebView2");
+            var dataDir = PlayerPaths.WebViewDir;
             // 「自動でスタート3秒前から再生」のため、操作なしでも音の出る動画を再生できるようにする。
             // 動画のビデオオーバーレイは既定で使わない(GPU のプロセスが固まったことがあるため。PlayerSettings.VideoOverlays)
             var args = "--autoplay-policy=no-user-gesture-required";
@@ -84,7 +82,7 @@ public partial class MainWindow : Window
         }
 
         var core = Web.CoreWebView2;
-        core.SetVirtualHostNameToFolderMapping(AppHost, Path.Combine(AppContext.BaseDirectory, "wwwroot"), CoreWebView2HostResourceAccessKind.Allow);
+        core.SetVirtualHostNameToFolderMapping(VirtualHosts.App, Path.Combine(AppContext.BaseDirectory, "wwwroot"), CoreWebView2HostResourceAccessKind.Allow);
         // Ctrl+ホイールはグラフの拡大・縮小に使うので、画面全体の拡大は止める
         core.Settings.IsZoomControlEnabled = false;
 #if !DEBUG
@@ -92,35 +90,37 @@ public partial class MainWindow : Window
 #endif
         core.WebMessageReceived += OnWebMessage;
         core.ProcessFailed += OnProcessFailed;
-        await RegisterI18nAsync();
-        core.Navigate($"https://{AppHost}/index.html");
+        await RegisterPageDataAsync();
+        core.Navigate($"https://{VirtualHosts.App}/index.html");
     }
 
-    private string? _i18nScriptId;
+    private string? _pageScriptId;
+    private Task _pageScript = Task.CompletedTask;
 
     /// <summary>
-    /// 画面の言語の辞書(Fh6.Core の strings.json から)と Windows の地域を、ページの読み込みより前に window.HEISO_I18N として渡す
-    /// (ページのスクリプトより先に動くので、日本語が一瞬出てから英語に変わることがない)。言語を変えたら登録し直してページを読み直す
+    /// 画面の言語の辞書と画面の設定を、ページの読み込みより前に渡すスクリプト(SettingsViewModel.PageScript)を登録し直す。
+    /// 続けて呼ばれても順に登録する(古い中身が残らないように)。言語を変えたときと、画面が設定を保存したとき
     /// </summary>
-    private async Task RegisterI18nAsync()
+    private Task RegisterPageDataAsync() => _pageScript = RegisterAfter(_pageScript);
+
+    private async Task RegisterAfter(Task before)
     {
-        var core = Web.CoreWebView2;
-        if (_i18nScriptId != null) core.RemoveScriptToExecuteOnDocumentCreated(_i18nScriptId);
-        // region は単位の「自動」に使う(Windows の地域。米国・英国ならマイル。units.js)
-        var json = JsonSerializer.Serialize(new { lang = Strings.Language, strings = Strings.Dictionary(Strings.Language), region = System.Globalization.RegionInfo.CurrentRegion.TwoLetterISORegionName });
-        _i18nScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync($"window.HEISO_I18N = {json};");
+        await Task.WhenAny(before);   // 前の登録が失敗しても続ける
+        if (Web.CoreWebView2 is not { } core) return;
+        if (_pageScriptId != null) core.RemoveScriptToExecuteOnDocumentCreated(_pageScriptId);
+        _pageScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(_prefs.PageScript());
     }
+
+    /// <summary>IShell: ページの読み込みより前に渡すものを登録し直す</summary>
+    public void RefreshPageData() => _ = RegisterPageDataAsync();
 
     /// <summary>画面の言語を変える(設定に保存し、辞書を登録し直して、同じ記録・同じ位置で画面を読み直す)</summary>
     private async Task SetLanguageAsync(string? setting)
     {
-        _settings.Language = setting is Strings.Japanese or Strings.English ? setting : Strings.Auto;
-        _settings.Save();
-        Strings.Use(_settings.Language);
-        PlayerLog.Info($"画面の言語: {_settings.Language}({Strings.Language})");
-        Title = _session == null ? AppTitle : $"{AppTitle} - {DisplayName}";
-        await RegisterI18nAsync();
-        _restoreSec = _session != null ? _lastVideoSec : null;
+        _prefs.SetLanguage(setting);
+        Title = _opened.Session == null ? AppTitle : $"{AppTitle} - {_opened.DisplayName}";
+        await RegisterPageDataAsync();
+        _restoreSec = _opened.Session != null ? _lastVideoSec : null;
         _restorePlay = false;
         _restoreQuiet = true;
         Web.CoreWebView2?.Reload();
@@ -131,55 +131,49 @@ public partial class MainWindow : Window
 
     private async void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        JsonElement msg;
-        try { msg = JsonDocument.Parse(e.WebMessageAsJson).RootElement; }
-        catch { return; }
-
-        var type = msg.GetProperty("type").GetString();
-        if (type is not ("position" or "log")) PlayerLog.Info($"画面から: {type}");
-        switch (type)
+        var msg = MessageJson.Parse(e.WebMessageAsJson, out var parseError);
+        if (msg == null)
         {
-            case "position":
+            PlayerLog.Error($"画面からのメッセージを読めない: {parseError} / {e.WebMessageAsJson[..Math.Min(e.WebMessageAsJson.Length, 300)]}");
+            return;
+        }
+        if (msg is not (ViewPosition or ViewLog)) PlayerLog.Info($"画面から: {MessageJson.TypeName(msg)}");
+        switch (msg)
+        {
+            case ViewPosition m:
                 // 動画の位置(画面が落ちたときに戻すため)
-                if (msg.TryGetProperty("sec", out var ps) && ps.ValueKind == JsonValueKind.Number) _lastVideoSec = ps.GetDouble();
-                _lastPlaying = msg.TryGetProperty("playing", out var pp) && pp.ValueKind == JsonValueKind.True;
+                if (m.Sec is double ps) _lastVideoSec = ps;
+                _lastPlaying = m.Playing == true;
                 break;
-            case "log":
+            case ViewLog m:
                 // 画面(JS)のエラーや操作の記録
-                var level = msg.TryGetProperty("level", out var lv) ? lv.GetString() : "info";
-                var text = "画面: " + (msg.TryGetProperty("message", out var lm) ? lm.GetString() : "");
-                if (level == "error") PlayerLog.Error(text); else PlayerLog.Info(text);
+                var text = "画面: " + m.Message;
+                if (m.Level == "error") PlayerLog.Error(text); else PlayerLog.Info(text);
                 break;
-            case "setLanguage":
-                var lang = msg.TryGetProperty("language", out var sl) ? sl.GetString() : null;
-                _ = Dispatcher.InvokeAsync(() => SetLanguageAsync(lang));   // ページを読み直すので、メッセージの処理を終えてから
+            case ViewSetLanguage m:
+                _ = Dispatcher.InvokeAsync(() => SetLanguageAsync(m.Language));   // ページを読み直すので、メッセージの処理を終えてから
                 break;
-            case "crashNoticeClosed":
+            case ViewCrashNoticeClosed:
                 _crashNoticeClosed = true;
                 break;
-            case "openLogs":
+            case ViewOpenLogs:
                 // ログのフォルダをエクスプローラーで開く(閉じるまで待つ画面ではないので、ここで開いてよい)
                 try { Process.Start(new ProcessStartInfo("explorer.exe", $"\"{PlayerLog.Dir}\"") { UseShellExecute = true }); }
                 catch (Exception ex) { PlayerLog.Error("ログのフォルダを開けない", ex); }
                 break;
-            case "ready":
+            case ViewReady m:
                 // 画面の設定のダイアログに、C# 側で持っている設定を渡す
-                Post(new
-                {
-                    type = "prefs", rememberWindow = _settings.RememberWindow, language = _settings.Language ?? Strings.Auto,
-                    replayLeadFrames = _settings.ReplayLeadFrames ?? PlayerSettings.DefaultReplayLeadFrames, replayLeadDefault = PlayerSettings.DefaultReplayLeadFrames,
-                });
+                Post(_prefs.Prefs());
                 // 画面の設定(どの記録にも共通)の同期の方式を使う
-                if (msg.TryGetProperty("method", out var rm) && Enum.TryParse<VideoSyncMethod>(rm.GetString(), out var readyMethod))
-                    _method = readyMethod;
+                _opened.SetMethod(m.Method);
                 SendCrashNotice();
                 // セッションを開いた後の読み直しなら、そのデータを送る(画面が落ちた後の立て直しなら、元の位置へ)
-                if (_session != null)
+                if (_opened.Session != null)
                 {
-                    SendSession(keepVideo: false);
+                    _video.SendSession(keepVideo: false);
                     if (_restoreSec is double rs)
                     {
-                        Post(new { type = "restore", sec = rs, play = _restorePlay, quiet = _restoreQuiet, race = _restoreRace });
+                        Post(new HostRestore(rs, _restorePlay, _restoreQuiet, _restoreRace));
                         _restoreQuiet = false;
                         _restoreRace = null;
                         PlayerLog.Info($"画面を立て直した(動画 {rs:F1} 秒へ{(_restorePlay ? "、再生を続ける" : "")})");
@@ -189,81 +183,15 @@ public partial class MainWindow : Window
                 else if (!_initialOpened && !string.IsNullOrEmpty(_initialPath))
                 {
                     _initialOpened = true;
-                    await OpenAsync(_initialPath);
+                    await _opened.OpenAsync(_initialPath);
                 }
                 break;
-            case "open":
-                // WebView2 のメッセージの処理の中で、閉じるまで待つ画面(ダイアログ)を開いてはいけない。
-                // 開いている間に WebView2 あての処理が届くと、WebView2 が割り込みを検出して止まり、アプリごと落ちる
-                // (2026-09-27〜28 に 8 回。EmbeddedBrowserWebView.dll、0x80000003)。メッセージの処理を終えてから開く
-                _ = Dispatcher.InvokeAsync(ChooseAndOpenAsync);
-                break;
-            case "openPackage":
-                _ = Dispatcher.InvokeAsync(ChooseAndOpenPackageAsync);   // 上と同じく、メッセージの処理を終えてから
-                break;
-            case "export":
-                if (msg.TryGetProperty("race", out var er) && er.ValueKind == JsonValueKind.Number)
-                {
-                    int race = er.GetInt32();
-                    bool reencode = msg.TryGetProperty("mode", out var em) && em.GetString() == "720";
-                    bool noAudio = msg.TryGetProperty("noAudio", out var na) && na.ValueKind == JsonValueKind.True;
-                    _ = Dispatcher.InvokeAsync(() => ExportAsync(race, reencode, noAudio));   // 保存先を選ぶ画面も、メッセージの処理を終えてから
-                }
-                break;
-            case "cancelJob":
-                _jobCts?.Cancel();
-                break;
-            case "probeFfmpeg":
-                _ = SendFfmpegStatusAsync(force: msg.TryGetProperty("force", out var pf) && pf.ValueKind == JsonValueKind.True);
-                break;
-            case "setFfmpegPath":
-                _settings.FfmpegPath = msg.TryGetProperty("path", out var fp) && fp.GetString() is string fps && fps.Trim().Length > 0 ? fps.Trim() : null;
-                _settings.Save();
-                _ = SendFfmpegStatusAsync(force: true);
-                break;
-            case "browseFfmpeg":
-                _ = Dispatcher.InvokeAsync(BrowseFfmpeg);   // ファイルを選ぶ画面も、メッセージの処理を終えてから
-                break;
-            case "setExportEncoder":
-                _settings.ExportEncoder = msg.TryGetProperty("encoder", out var ee) ? ee.GetString() : null;
-                _settings.Save();
-                break;
-            case "setReplayLead":
-                // リプレイを割り当てたときのずらし量(設定の「同期」。コマ)。既定と同じなら空にして、既定が変わったら追う
-                if (msg.TryGetProperty("frames", out var rl) && rl.ValueKind == JsonValueKind.Number)
-                {
-                    int frames = Math.Clamp((int)Math.Round(rl.GetDouble()), -60, 60);
-                    _settings.ReplayLeadFrames = frames == PlayerSettings.DefaultReplayLeadFrames ? null : frames;
-                    _settings.Save();
-                    PlayerLog.Info($"リプレイを新しく割り当てたときのずらし量: 前へ {frames} コマ");   // 割り当て済みのリプレイは変えない
-                }
-                break;
-            case "rememberWindow":
-                _settings.RememberWindow = msg.TryGetProperty("on", out var on) && on.GetBoolean();
-                if (!_settings.RememberWindow) _settings.Window = null;
-                _settings.Save();
-                break;
-            case "manualSync":
-                if (!AltManualSync(msg)) SaveManualSync(msg);
-                break;
-            case "raceNamesForm":
-                SendRaceNamesForm(msg.GetProperty("race").GetInt32());
-                break;
-            case "editRaceNames":
-                EditRaceNames(msg);
-                break;
-            case "clearManualSync":
-                if (!AltClearSync()) ClearManualSync();
-                break;
-            case "method":
-                if (Enum.TryParse<VideoSyncMethod>(msg.GetProperty("method").GetString(), out var m))
-                {
-                    _method = m;
-                    SendSession(keepVideo: true);
-                }
+            case ViewCancelJob:
+                _job.Cancel();
                 break;
             default:
-                if (!OnAltMessage(type, msg)) OnSessionsMessage(type, msg);
+                // 割り当てた動画を表示していれば、手動補正はその動画のもの(_video)。録画なら開いている記録のもの(_opened)
+                _ = _video.Handle(msg) ?? _opened.Handle(msg) ?? _sessions.Handle(msg) ?? _prefs.Handle(msg) ?? _export.Handle(msg);
                 break;
         }
     }
@@ -275,13 +203,7 @@ public partial class MainWindow : Window
     private void SendCrashNotice()
     {
         if (_crashNoticeClosed || PlayerLog.PreviousUncleanStart is not DateTime since) return;
-        Post(new
-        {
-            type = "crashNotice",
-            startedAt = since.ToString("yyyy-MM-dd HH:mm"),
-            logDir = PlayerLog.Dir,
-            dump = PlayerLog.LatestCrashDump(since),
-        });
+        Post(new HostCrashNotice(since.ToString("yyyy-MM-dd HH:mm"), PlayerLog.Dir, PlayerLog.LatestCrashDump(since)));
     }
 
     /// <summary>
@@ -298,7 +220,7 @@ public partial class MainWindow : Window
             case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
             case CoreWebView2ProcessFailedKind.FrameRenderProcessExited:
             case CoreWebView2ProcessFailedKind.GpuProcessExited:
-                _restoreSec = _session != null ? _lastVideoSec : null;
+                _restoreSec = _opened.Session != null ? _lastVideoSec : null;
                 _restorePlay = _lastPlaying;
                 _ = Dispatcher.InvokeAsync(() => Web.CoreWebView2?.Reload());
                 break;
@@ -313,21 +235,23 @@ public partial class MainWindow : Window
     }
 
     /// <summary>画面に知らせる(App の例外の処理から呼ぶ)</summary>
-    public void NotifyError(string message) => Post(new { type = "notice", error = message });
+    public void NotifyError(string message) => Post(new HostNotice(null, message));
 
     private bool _choosing;
 
-    /// <summary>フォルダを選ぶ画面を出して開く。WebView2 のイベントの外(Dispatcher から)で呼ぶこと</summary>
-    private async Task ChooseAndOpenAsync()
+    /// <summary>
+    /// 閉じるまで待つ画面(ダイアログ)を出す。ほかの選ぶ画面が開いていれば出さずに null(続けて押されても、画面は 1 つだけ)。
+    /// WebView2 のメッセージの処理の中で、閉じるまで待つ画面を開いてはいけない。開いている間に WebView2 あての処理が届くと、
+    /// WebView2 が割り込みを検出して止まり、アプリごと落ちる(2026-09-27〜28 に 8 回。EmbeddedBrowserWebView.dll、0x80000003)。
+    /// メッセージの処理を終えてから開く
+    /// </summary>
+    private async Task<string?> ShowDialogAsync(Func<string?> show)
     {
-        if (_choosing) return;   // 続けて押されても、画面は 1 つだけ
+        if (_choosing) return null;
         _choosing = true;
         try
         {
-            // 毎回、前回開いた記録の 1 つ上(記録アプリの保存先)から始める
-            var dlg = new OpenFolderDialog { Title = Strings.T("セッションフォルダを選んでください"), InitialDirectory = _settings.InitialFolder() ?? "" };
-            if (dlg.ShowDialog(this) != true) return;
-            await OpenAsync(dlg.FolderName);
+            return await Dispatcher.InvokeAsync(show);
         }
         finally
         {
@@ -335,547 +259,66 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>配布パッケージを選ぶ画面を出して開く。WebView2 のイベントの外(Dispatcher から)で呼ぶこと</summary>
-    private async Task ChooseAndOpenPackageAsync()
+    /// <summary>IShell: フォルダを選ぶ画面</summary>
+    public Task<string?> PickFolderAsync(string title, string? initialDir) => ShowDialogAsync(() =>
     {
-        if (_choosing) return;
-        _choosing = true;
-        try
-        {
-            var dlg = new OpenFileDialog
-            {
-                Title = Strings.T("配布パッケージを選んでください"),
-                Filter = $"{Strings.T("HEISO のパッケージ")} (*{PackageInfo.Extension})|*{PackageInfo.Extension}|{Strings.T("すべてのファイル")} (*.*)|*.*",
-                InitialDirectory = _settings.PackageFolder() ?? "",
-            };
-            if (dlg.ShowDialog(this) != true) return;
-            await OpenAsync(dlg.FileName);
-        }
-        finally
-        {
-            _choosing = false;
-        }
-    }
+        var dlg = new OpenFolderDialog { Title = title, InitialDirectory = initialDir ?? "" };
+        return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
+    });
 
-    /// <summary>配布パッケージを展開する場所(%LOCALAPPDATA%\HEISO\Player\packages)</summary>
-    private static string PackagesDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "Player", "packages");
-
-    private static bool IsPackageFile(string path) =>
-        File.Exists(path) && path.EndsWith(PackageInfo.Extension, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>開いている配布パッケージのファイル(記録のフォルダを開いているときは null)</summary>
-    private string? _packageFile;
-
-    /// <summary>セッションフォルダ(またはその中のファイル)か、配布パッケージ(.heiso.zip)を開く</summary>
-    private async Task OpenAsync(string path)
+    /// <summary>IShell: ファイルを選ぶ画面</summary>
+    public Task<string?> PickFileAsync(string title, string filter, string? initialDir) => ShowDialogAsync(() =>
     {
-        string? package = IsPackageFile(path) ? Path.GetFullPath(path) : null;
-        var folder = package != null ? "" : File.Exists(path) ? Path.GetDirectoryName(Path.GetFullPath(path))! : Path.GetFullPath(path);
-        Post(new { type = "loading", name = Path.GetFileName(package ?? folder) });
-        PlayerLog.Info($"開く: {package ?? folder}");
-        try
-        {
-            var sw = Stopwatch.StartNew();
-            if (package != null)
-            {
-                folder = await Task.Run(() => PackageReader.Extract(package, PackagesDir));
-                PlayerLog.Info($"パッケージを展開した: {folder}({sw.ElapsedMilliseconds} ms)");
-            }
-            _session = await Task.Run(() => LoadedSession.Load(folder));
-            ResetAlt();
-            // 計測モード: 車のプロファイルにこの記録を足す(作り直しが要る部分だけ)。書けなくても表示は続ける
-            var loaded = _session;
-            var swp = System.Diagnostics.Stopwatch.StartNew();
-            var profileError = await Task.Run(() =>
-            {
-                var e = loaded.UpdateProfiles(Profiles);
-                loaded.ApplyProfiles(loaded.ProfileFiles);   // 性能モードは、同じ車の記録を合わせたカーブで
-                return e;
-            });
-            if (profileError != null) PlayerLog.Error($"車のプロファイルを保存できない: {profileError}");
-            PlayerLog.Info($"車のプロファイル: {swp.ElapsedMilliseconds} ms({Profiles.Folder})");
-            _packageFile = package;
-            if (package != null)
-            {
-                _settings.LastPackageDir = Path.GetDirectoryName(package);
-                _settings.Save();
-            }
-            else _settings.Remember(folder);
-            PlayerLog.Info($"開いた: {_session.Table.RowCount} 行、レース {_session.Races.Count} 本、動画 {_session.VideoPath ?? "なし"}、{_session.Fps?.ToString("0.###") ?? "-"} fps、{sw.ElapsedMilliseconds} ms");
-        }
-        catch (Exception ex)
-        {
-            PlayerLog.Error($"開けない: {package ?? folder}", ex);
-            _session = null;
-            _packageFile = null;
-            Post(new { type = "error", message = ex is UserFacingException or PackageException ? ex.Message : Strings.T("開けませんでした: {message}", ("message", ex.Message)) });
-            return;
-        }
+        var dlg = new OpenFileDialog { Title = title, Filter = filter, InitialDirectory = initialDir ?? "" };
+        return dlg.ShowDialog(this) == true ? dlg.FileName : null;
+    });
 
-        // 動画を置いたフォルダを仮想ホストに割り当てる。割り当ては読み込み済みのページには効かない
-        // (WebView2 の挙動。動画が「対応していない形式」になる)ので、ページを読み直し、"ready" を受けてからデータを送る
+    /// <summary>IShell: 保存先を選ぶ画面</summary>
+    public Task<string?> PickSaveFileAsync(string title, string filter, string fileName, string? initialDir) => ShowDialogAsync(() =>
+    {
+        var dlg = new SaveFileDialog { Title = title, Filter = filter, FileName = fileName, InitialDirectory = initialDir ?? "", AddExtension = false };
+        return dlg.ShowDialog(this) == true ? dlg.FileName : null;
+    });
+
+    /// <summary>IShell: 開いた記録を画面に出す。動画を置いたフォルダを仮想ホストに割り当て、ページを読み直す("ready" を受けてからデータを送る)</summary>
+    public void ShowSession(LoadedSession session, string? altDir)
+    {
+        // 割り当ては読み込み済みのページには効かない(WebView2 の挙動。動画が「対応していない形式」になる)ので、読み直す
         var core = Web.CoreWebView2;
-        var videoDir = _session.VideoPath == null ? null : Path.GetDirectoryName(_session.VideoPath);
+        var folder = session.Folder;
+        var videoDir = session.VideoPath == null ? null : Path.GetDirectoryName(session.VideoPath);
         bool external = videoDir != null && !string.Equals(videoDir, folder, StringComparison.OrdinalIgnoreCase);
-        core.ClearVirtualHostNameToFolderMapping(SessionHost);
-        core.SetVirtualHostNameToFolderMapping(SessionHost, folder, CoreWebView2HostResourceAccessKind.Allow);
-        core.ClearVirtualHostNameToFolderMapping(VideoHost);
+        core.ClearVirtualHostNameToFolderMapping(VirtualHosts.Session);
+        core.SetVirtualHostNameToFolderMapping(VirtualHosts.Session, folder, CoreWebView2HostResourceAccessKind.Allow);
+        core.ClearVirtualHostNameToFolderMapping(VirtualHosts.Video);
         if (external)
-            core.SetVirtualHostNameToFolderMapping(VideoHost, videoDir!, CoreWebView2HostResourceAccessKind.Allow);
+            core.SetVirtualHostNameToFolderMapping(VirtualHosts.Video, videoDir!, CoreWebView2HostResourceAccessKind.Allow);
+        if (_altHostDir != null) core.ClearVirtualHostNameToFolderMapping(VirtualHosts.Alt);   // 前の記録で割り当てた動画のフォルダ
+        _altHostDir = altDir;   // 最初に表示する割り当てた動画のフォルダ
+        if (altDir != null) core.SetVirtualHostNameToFolderMapping(VirtualHosts.Alt, altDir, CoreWebView2HostResourceAccessKind.Allow);
 
-        Title = $"{AppTitle} - {DisplayName}";
+        Title = $"{AppTitle} - {_opened.DisplayName}";
         core.Reload();
     }
 
-    /// <summary>画面に出す名前: 記録ならフォルダ名、パッケージならファイル名(.heiso.zip を除く)</summary>
-    private string DisplayName =>
-        _packageFile != null ? Path.GetFileName(_packageFile)[..^PackageInfo.Extension.Length]
-        : _session != null ? Path.GetFileName(_session.Folder) : "";
-
-    private bool _exporting;
-    private CancellationTokenSource? _jobCts;
-
-    /// <summary>
-    /// 選んでいるレースを配布パッケージに書き出す。reencode なら ffmpeg で 720p に作り直す(数分かかるので、進み具合と中止を画面に出す)。
-    /// 保存先を選ぶ画面を出すので、WebView2 のイベントの外(Dispatcher から)で呼ぶこと
-    /// </summary>
-    private async Task ExportAsync(int raceIndex, bool reencode, bool noAudio)
+    /// <summary>IShell: 割り当てた動画のフォルダを alt.heiso に割り当てる。変わればページを読み直して、その位置へ戻す</summary>
+    public bool ShowVideoFolder(string dir, double sec, int? race)
     {
-        var s = _session;
-        if (s == null || _exporting || _choosing) return;
-        if (s.Package != null) { Toast(error: Strings.T("パッケージから、もう一度パッケージは作れません。元の記録を開いてください")); return; }
-        // 割り当てた動画を表示していれば、その動画を書き出す(レースは割り当てたレース。リプレイの表示ではレースが 1 本だけなので)
-        PackageSource? source = null;
-        var alt = ActiveAlt();
-        if (alt != null)
-        {
-            raceIndex = AltRaceIndex(alt);
-            var loc = alt.Locate(s.Folder);
-            if (loc.Status != VideoAltStatus.Found || raceIndex < 0) { Toast(error: Strings.T("動画が見つかりません。右の欄「この動画」の「動画を選び直す…」で選び直してください")); return; }
-            source = PackageSource.FromAlt(alt, loc.FoundPath!);
-        }
-        if (raceIndex < 0 || raceIndex >= s.Races.Count) return;
-        var race = s.Races[raceIndex];
-        _settings.ExportMode = reencode ? "720" : "copy";
-        _settings.Save();
-
-        // 720p: ffmpeg とエンコーダを先に決める(保存先を選んだ後で「使えない」と言わないように)
-        PackageReencodeOptions? options = null;
-        if (reencode)
-        {
-            var st = await GetFfmpegStatusAsync(force: false);
-            if (st.Path == null) { Toast(error: Strings.T("ffmpeg が見つかりません。設定の「書き出し」で ffmpeg の場所を指定してください")); return; }
-            var enc = st.Selected;
-            if (enc == null) { Toast(error: Strings.T("この PC で使える H.264 のエンコーダが ffmpeg にありません(設定の「書き出し」で確かめられます)")); return; }
-            double fps = (source != null ? source.Fps : s.Fps) ?? 30;
-            options = new PackageReencodeOptions(st.Path, new Ffmpeg.Options(enc, VideoKbps: Ffmpeg.DefaultVideoKbps(fps)));
-        }
-
-        string path;
-        _choosing = true;
-        try
-        {
-            var name = PackageWriter.DefaultFileName(Path.GetFileName(s.Folder), race.Course, race.Car);
-            if (source?.IsReplay == true) name = name[..^PackageInfo.Extension.Length] + "_replay" + PackageInfo.Extension;
-            if (reencode) name = name[..^PackageInfo.Extension.Length] + "_720p" + PackageInfo.Extension;
-            var dlg = new SaveFileDialog
-            {
-                Title = reencode ? Strings.T("配布パッケージ(720p)の保存先") : Strings.T("配布パッケージの保存先"),
-                Filter = $"{Strings.T("HEISO のパッケージ")} (*{PackageInfo.Extension})|*{PackageInfo.Extension}",
-                FileName = name,
-                InitialDirectory = _settings.ExportFolder(s.Folder),
-                AddExtension = false,
-            };
-            if (dlg.ShowDialog(this) != true) return;
-            path = dlg.FileName;
-        }
-        finally
-        {
-            _choosing = false;
-        }
-        // 名前の最後を .heiso.zip にそろえる(「abc」や「abc.zip」と入れられても)
-        if (!path.EndsWith(PackageInfo.Extension, StringComparison.OrdinalIgnoreCase))
-            path = (path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? path[..^4] : path) + PackageInfo.Extension;
-
-        _exporting = true;
-        using var cts = new CancellationTokenSource();
-        _jobCts = cts;
-        var what = reencode ? Strings.T("{n} レース目を 720p で書き出しています({encoder})", ("n", raceIndex + 1), ("encoder", Ffmpeg.EncoderName(options!.Encode.Encoder)))
-                            : Strings.T("{n} レース目を書き出しています", ("n", raceIndex + 1));
-        Job(what, 0, cancellable: reencode);
-        PlayerLog.Info($"書き出す: {s.Folder} のレース {raceIndex + 1}(開始 {race.Segment.StartRecvTime:F3})→ {path}{(reencode ? $"(720p、{options!.Encode.Encoder}、{options.Encode.VideoKbps} kbps)" : "")}"
-                       + $"{(source != null ? $"、動画 {alt!.Id}({source.Content})" : "")}{(noAudio ? "、音声なし" : "")}");
-        // 進み具合は 0.5 秒に 1 回だけ画面へ(ffmpeg の知らせは細かいので)
-        double lastSent = -1;
-        var sw = Stopwatch.StartNew();
-        var progress = new Progress<double>(v =>
-        {
-            if (v < 1 && sw.Elapsed.TotalSeconds - lastSent < 0.5) return;
-            lastSent = sw.Elapsed.TotalSeconds;
-            Job(what, v, cancellable: reencode);
-        });
-        try
-        {
-            var r = await Task.Run(() => PackageWriter.Write(s.Folder, race.Segment.StartRecvTime, path, options, progress, cts.Token, source, noAudio));
-            _settings.LastExportDir = Path.GetDirectoryName(path);
-            _settings.Save();
-            PlayerLog.Info($"書き出した: {r.Bytes / 1e6:F1} MB、動画 {r.Info.Video.CutFromSec:F2} 秒から {r.Info.Video.DurationSec:F1} 秒、テレメトリー {r.TelemetryRows} 行、{r.ElapsedSec:F1} 秒");
-            Job(null);
-            var done = Strings.T("書き出しました: {file}({mb:F0} MB、{sec:F0} 秒)。場所: {dir}", ("file", Path.GetFileName(path)), ("mb", r.Bytes / 1e6), ("sec", r.ElapsedSec), ("dir", Path.GetDirectoryName(path)));
-            // 作り直さずに切り出したリプレイの頭が、キーフレームまで大きく遅れた
-            if (r.ReplayLateSec is double late && late >= PackageWriter.ReplayLateWarnSec)
-                done += " " + Strings.T("動画の頭がリプレイの先頭より {sec:F1} 秒遅れています(キーフレームの間隔のため)。「720p に縮める」で書き出すと、先頭のコマから始まります", ("sec", late));
-            Toast(message: done, sec: 12);
-        }
-        catch (OperationCanceledException)
-        {
-            PlayerLog.Info($"書き出しを中止した: {path}");
-            Job(null);
-            Toast(message: Strings.T("書き出しを中止しました"));
-        }
-        catch (Exception ex)
-        {
-            PlayerLog.Error($"書き出せない: {path}", ex);
-            Job(null);
-            Toast(error: ex is PackageException ? ex.Message : Strings.T("書き出せませんでした: {message}", ("message", ex.Message)));
-        }
-        finally
-        {
-            _exporting = false;
-            _jobCts = null;
-        }
+        if (string.Equals(_altHostDir, dir, StringComparison.OrdinalIgnoreCase)) return false;
+        var core = Web.CoreWebView2;
+        if (_altHostDir != null) core.ClearVirtualHostNameToFolderMapping(VirtualHosts.Alt);
+        core.SetVirtualHostNameToFolderMapping(VirtualHosts.Alt, dir, CoreWebView2HostResourceAccessKind.Allow);
+        _altHostDir = dir;
+        _restoreSec = sec;
+        _restorePlay = false;
+        _restoreQuiet = true;
+        _restoreRace = race;
+        core.Reload();
+        return true;
     }
 
-    /// <summary>長くかかる処理の進み具合を画面の下に出す(text が null なら消す)</summary>
-    private void Job(string? text, double progress = 0, bool cancellable = false) =>
-        Post(new { type = "job", text, progress = Math.Round(progress, 3), cancellable });
-
-    // ---- ffmpeg(720p の書き出し) ----
-
-    private sealed record FfmpegStatus(string? Path, string? Version, List<string> Encoders, string? Selected);
-    private FfmpegStatus? _ffmpeg;
-    private string? _ffmpegFor;   // どの設定で調べた結果か
-
-    /// <summary>
-    /// ffmpeg を探す場所(設定が空のとき。PATH の後に見る): 再生アプリのフォルダの中・隣(HEISO を展開したフォルダ)の ffmpeg フォルダ、
-    /// %LOCALAPPDATA%\HEISO\ffmpeg
-    /// </summary>
-    private static IEnumerable<string> FfmpegSearchDirs()
-    {
-        var app = AppContext.BaseDirectory.TrimEnd('\\', '/');
-        yield return Path.Combine(app, "ffmpeg");
-        if (Path.GetDirectoryName(app) is string parent) yield return Path.Combine(parent, "ffmpeg");
-        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "ffmpeg");
-    }
-
-    /// <summary>ffmpeg の場所・版・使えるエンコーダ(試すのに数秒かかるので、設定が変わるまで覚えておく)</summary>
-    private async Task<FfmpegStatus> GetFfmpegStatusAsync(bool force)
-    {
-        var key = _settings.FfmpegPath ?? "";
-        if (!force && _ffmpeg != null && _ffmpegFor == key) return WithSelected(_ffmpeg);
-        var st = await Task.Run(() =>
-        {
-            var path = Ffmpeg.Find(_settings.FfmpegPath, FfmpegSearchDirs());
-            if (path == null) return new FfmpegStatus(null, null, new List<string>(), null);
-            var ver = Ffmpeg.Version(path);
-            return new FfmpegStatus(path, ver, ver == null ? new List<string>() : Ffmpeg.UsableEncoders(path), null);
-        });
-        _ffmpeg = st;
-        _ffmpegFor = key;
-        PlayerLog.Info($"ffmpeg: {st.Path ?? "見つからない"} {st.Version} / 使えるエンコーダ: {string.Join(", ", st.Encoders)}");
-        return WithSelected(st);
-    }
-
-    /// <summary>設定で選んだエンコーダ(使えなければ、使えるものの先頭)</summary>
-    private FfmpegStatus WithSelected(FfmpegStatus st)
-    {
-        var want = _settings.ExportEncoder;
-        var sel = !string.IsNullOrEmpty(want) && want != "auto" && st.Encoders.Contains(want) ? want : st.Encoders.FirstOrDefault();
-        return st with { Selected = sel };
-    }
-
-    private async Task SendFfmpegStatusAsync(bool force)
-    {
-        Post(new { type = "ffmpegStatus", checking = true });
-        var st = await GetFfmpegStatusAsync(force);
-        Post(new
-        {
-            type = "ffmpegStatus",
-            checking = false,
-            configured = _settings.FfmpegPath,
-            path = st.Path,
-            version = st.Version,
-            encoders = st.Encoders.Select(id => new { id, name = Ffmpeg.EncoderName(id) }).ToArray(),
-            encoder = string.IsNullOrEmpty(_settings.ExportEncoder) ? "auto" : _settings.ExportEncoder,
-            selected = st.Selected,
-            exportMode = _settings.ExportMode ?? "copy",
-        });
-    }
-
-    /// <summary>ffmpeg.exe を選ぶ画面。WebView2 のイベントの外(Dispatcher から)で呼ぶこと</summary>
-    private async Task BrowseFfmpeg()
-    {
-        if (_choosing) return;
-        _choosing = true;
-        try
-        {
-            var dlg = new OpenFileDialog
-            {
-                Title = Strings.T("ffmpeg.exe を選んでください"),
-                Filter = $"ffmpeg (ffmpeg.exe)|ffmpeg.exe|{Strings.T("すべてのファイル")} (*.*)|*.*",
-                InitialDirectory = _ffmpeg?.Path is string cur ? Path.GetDirectoryName(cur) ?? "" : "",
-            };
-            if (dlg.ShowDialog(this) != true) return;
-            _settings.FfmpegPath = dlg.FileName;
-            _settings.Save();
-        }
-        finally
-        {
-            _choosing = false;
-        }
-        await SendFfmpegStatusAsync(force: true);
-    }
-
-    /// <summary>画面の下に短く知らせる(手動補正の欄には触れない)。sec は出しておく秒数</summary>
-    private void Toast(string? message = null, string? error = null, double? sec = null) =>
-        Post(new { type = "toast", message, error, sec });
-
-    private void SendSession(bool keepVideo)
-    {
-        if (_session == null) return;
-        var s = _session;
-        View view;
-        try { view = CurrentView()!; }
-        catch (Exception ex)
-        {
-            // 割り当てた動画で作れなければ、録画に戻す
-            PlayerLog.Error($"割り当てた動画の表示を作れない: {_activeAltId}", ex);
-            Toast(error: ex is UserFacingException ? ex.Message : Strings.T("動画を切り替えられませんでした: {message}", ("message", ex.Message)));
-            _activeAltId = null;
-            _altPath = null;
-            view = CurrentView()!;
-        }
-        var map = view.Map;
-        var mapError = view.MapError;
-        var shown = view.Session;
-        string? videoUrl = VideoUrl(view.VideoPath);
-
-        var v = s.Meta.Video;
-        Post(new
-        {
-            type = "session",
-            keepVideo,
-            name = DisplayName,
-            label = s.Meta.Session.Label,
-            comment = SessionFolderName.TryParse(s.Package?.SourceSession ?? Path.GetFileName(s.Folder), out _, out var comment) ? comment : null,
-            // 配布パッケージを開いているか(書き出すボタンを出さない)
-            package = s.Package != null,
-            startedAt = s.Meta.Session.StartedAt,
-            complete = s.Meta.Complete,
-            videoUrl,
-            // 録画と割り当てた動画(上の欄の「動画」)。割り当てられるのは記録(パッケージでなく、記録を終えたもの)だけ
-            videos = VideoList(),
-            activeVideo = view.Alt?.Id,
-            alt = AltInfo(view),
-            canAddVideo = s.Package == null && s.Meta.Complete,
-            hasRecording = s.VideoPath != null,
-            videoError = view.VideoPath == null ? Strings.T("録画ファイルが見つかりません(テレメトリーだけ表示します)") : null,
-            method = _method.ToString(),
-            mapError,
-            sync = new
-            {
-                samplesTotal = v.SyncSamples.Count,
-                samplesUsed = map?.SamplesUsed ?? 0,
-                isFallback = map?.IsFallback ?? false,
-                manualSync = v.ManualSync.Count,
-                manualShiftSec = map?.ManualShiftSec ?? 0,
-                endCheckSec = v.EndCheckSec,
-                clockRate = v.ClockRate,
-                fileDurationSec = v.FileDurationSec,
-            },
-            rows = shown.Table.RowCount,
-            fps = view.Fps,
-            series = map == null ? null : shown.BuildSeries(map),
-            marks = map == null ? null : shown.BuildMarks(map),
-            // 計測モード(車のプロファイル)。リプレイを見ているときも、元の記録の車のもの
-            measure = s.BuildMeasure(),
-        });
-    }
-
-    /// <summary>
-    /// 手動補正の点を保存する。graphSec はグラフで指した瞬間(今の変換での動画の秒)、videoSec は映像のコマの秒。
-    /// グラフの位置をテレメトリー時刻に直すのは VideoTimeMap だけで行う
-    /// </summary>
-    private void SaveManualSync(JsonElement msg)
-    {
-        if (_session == null) return;
-        var map = VideoTimeMap.Create(_session.Meta.Video, _method, out _);
-        if (map == null) { Notice(error: Strings.T("動画との対応が取れないため、補正できません")); return; }
-        var point = new ManualSyncPoint
-        {
-            RecvTime = Math.Round(map.ToRecvTime(msg.GetProperty("graphSec").GetDouble()), 4),
-            VideoSec = Math.Round(msg.GetProperty("videoSec").GetDouble(), 4),
-            Note = msg.TryGetProperty("note", out var n) && n.GetString() is string note && note.Trim().Length > 0 ? note.Trim() : null,
-            CreatedAt = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
-        };
-        UpdateManualSync(() => SessionMeta.AppendManualSync(_session.Folder, point), Strings.T("手動補正を保存しました"));
-    }
-
-    private void ClearManualSync()
-    {
-        if (_session == null) return;
-        UpdateManualSync(() => SessionMeta.ClearManualSync(_session.Folder), Strings.T("手動補正を消しました"));
-    }
-
-    /// <summary>session.json を書き換え、読み直して描き直す(動画の位置はそのまま)</summary>
-    private void UpdateManualSync(Func<string?> write, string done)
-    {
-        try
-        {
-            var error = write();
-            if (error != null) { Notice(error: error); return; }
-            _session!.Meta = SessionMeta.Load(_session.Folder);
-        }
-        catch (Exception ex)
-        {
-            PlayerLog.Error("手動補正を session.json に書けない", ex);
-            Notice(error: Strings.T("session.json に書けませんでした: {message}", ("message", ex.Message)));
-            return;
-        }
-        SendSession(keepVideo: true);
-        Notice(message: done);
-    }
-
-    private void Notice(string? message = null, string? error = null) => Post(new { type = "notice", message, error });
-
-    // ---- レースのコース名・車名(記録アプリの「直前のレース」の直し方と同じ) ----
-
-    /// <summary>
-    /// 名前を付けるダイアログの中身: 登録済みのコース(スタートの位置で一致するものを先頭)、その車種の名前、同じ組のセッティング。
-    /// 登録ファイルは読むだけ(書くのは記録アプリ。RegistryInbox 経由)
-    /// </summary>
-    private void SendRaceNamesForm(int raceIndex)
-    {
-        var s = _session;
-        if (s == null || raceIndex < 0 || raceIndex >= s.Races.Count) return;
-        var (seg, course, car, setup) = s.Races[raceIndex];
-        var reg = Registry.TryRead(Path.Combine(s.SaveFolder, Registry.FileName)) ?? new Registry();
-        var match = CourseMatcher.Match(reg.Courses, seg.StartX, seg.StartZ, seg.StartYaw);
-        var sig = s.RaceCar(seg);
-        var setups = sig is CarSignature cs ? reg.FindSetups(cs) : new List<RegisteredSetup>();
-        Post(new
-        {
-            type = "raceNamesForm",
-            race = raceIndex,
-            editable = s.Package == null && s.Meta.Complete,
-            reason = s.Package != null ? Strings.T("パッケージの名前は変えられません") : !s.Meta.Complete ? Strings.T("記録中の記録には保存できません") : null,
-            course = new
-            {
-                current = course,
-                matchId = match?.Course.Id,
-                list = reg.Courses
-                    .OrderByDescending(c => c.Id == match?.Course.Id).ThenBy(c => c.Name, StringComparer.CurrentCulture)
-                    .Select(c => new { id = c.Id, name = c.Name, kind = c.Kind }).ToArray(),
-            },
-            car = sig is CarSignature g ? new
-            {
-                ordinal = g.Ordinal, sig = g.ToString(), current = car, registered = reg.CarName(g.Ordinal),
-                setup = setup, setups = setups.Select(x => new { id = x.Id, name = x.Name }).ToArray(),
-            } : null,
-        });
-    }
-
-    /// <summary>
-    /// レースに付けた名前を保存する: この記録の session.json に race_edited を足し(レースの一覧と書き出しにすぐ出る)、
-    /// 保存先の登録の受け渡し用のファイルに頼みを足す(記録アプリが登録ファイルに取り込む)
-    /// </summary>
-    private void EditRaceNames(JsonElement msg)
-    {
-        var s = _session;
-        if (s == null) return;
-        int raceIndex = msg.GetProperty("race").GetInt32();
-        if (raceIndex < 0 || raceIndex >= s.Races.Count) return;
-        if (s.Package != null) { Toast(error: Strings.T("パッケージの名前は変えられません")); return; }
-        string? Str(string name) => msg.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString()!.Trim().Length > 0 ? v.GetString()!.Trim() : null;
-
-        var seg = s.Races[raceIndex].Segment;
-        var sig = s.RaceCar(seg);
-        var reg = Registry.TryRead(Path.Combine(s.SaveFolder, Registry.FileName)) ?? new Registry();
-        string? courseId = Str("courseId"), courseName = Str("courseName"), courseKind = Str("courseKind");
-        string? carName = Str("carName"), setupId = Str("setupId"), setupName = Str("setupName");
-        if (courseId == RegistryInbox.NewId && courseName == null) { Toast(error: Strings.T("レース名を入れてください")); return; }
-        if (courseId != null && courseId != RegistryInbox.NewId && courseName == null) courseName = reg.CourseById(courseId)?.Name;
-        if (setupId == RegistryInbox.NewId && setupName == null && sig is CarSignature g0) setupName = $"{g0.ClassName}{g0.Pi} {g0.DrivetrainName}";
-        if (setupId != null && setupId != RegistryInbox.NewId && setupName == null) setupName = reg.SetupById(setupId)?.Name;
-
-        var data = new System.Text.Json.Nodes.JsonObject
-        {
-            ["race_start_recv_time"] = Math.Round(seg.StartRecvTime, 6),
-            ["changes"] = new System.Text.Json.Nodes.JsonArray("再生アプリで名前を付けた"),
-            ["source"] = "player",
-            ["course_id"] = courseId == RegistryInbox.NewId ? null : courseId,
-            ["course_name"] = courseName, ["course_kind"] = courseKind,
-            ["car_ordinal"] = sig?.Ordinal, ["car_name"] = carName,
-            ["setup_id"] = setupId == RegistryInbox.NewId ? null : setupId, ["setup_name"] = setupName,
-        };
-        // 補助の設定(計測モード)。変えたときだけ画面から来る。値は on / off、変速は auto / manual、分からなければ null
-        if (msg.TryGetProperty("assists", out var asg) && asg.ValueKind == JsonValueKind.Object)
-        {
-            string? A(string k) => asg.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } x ? x : null;
-            data["assists"] = new System.Text.Json.Nodes.JsonObject { ["abs"] = A("abs"), ["tcs"] = A("tcs"), ["stm"] = A("stm"), ["lc"] = A("lc"), ["shift"] = A("shift") };
-            ((System.Text.Json.Nodes.JsonArray)data["changes"]!).Add("補助の設定");
-        }
-        var ev = new SessionEvent
-        {
-            RecvTime = Math.Round(Clock.Now(), 6), Type = "race_edited",
-            Detail = $"再生アプリで名前を付けた: {courseName ?? "コース不明"} / {carName ?? "車両不明"}{(setupName != null ? $" {setupName}" : "")}",
-            Data = data,
-        };
-        try
-        {
-            var error = SessionMeta.AppendEvent(s.Folder, ev);
-            if (error != null) { Toast(error: error); return; }
-            s.Meta = SessionMeta.Load(s.Folder);
-            s.RefreshNames();
-        }
-        catch (Exception ex)
-        {
-            PlayerLog.Error("レースの名前を session.json に書けない", ex);
-            Toast(error: Strings.T("session.json に書けませんでした: {message}", ("message", ex.Message)));
-            return;
-        }
-
-        // 登録ファイルへは、受け渡し用のファイル経由で(記録アプリが取り込む)
-        string registryNote;
-        try
-        {
-            RegistryInbox.Append(s.SaveFolder, new RegistryRequest
-            {
-                CreatedAt = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
-                Session = Path.GetFileName(s.Folder), RaceStartRecvTime = Math.Round(seg.StartRecvTime, 6),
-                CourseId = courseId, CourseName = courseName, CourseKind = courseKind,
-                StartX = Math.Round(seg.StartX, 3), StartZ = Math.Round(seg.StartZ, 3), StartYaw = Math.Round(seg.StartYaw, 5),
-                CarOrdinal = sig?.Ordinal, ClassRaw = sig?.Class, Pi = sig?.Pi, DrivetrainRaw = sig?.Drivetrain, Cylinders = sig?.Cylinders,
-                CarName = carName, SetupId = setupId, SetupName = setupName,
-            });
-            registryNote = Strings.T("記録アプリを次に起動したとき(起動中なら数秒で)登録します");
-        }
-        catch (Exception ex)
-        {
-            PlayerLog.Error("登録の受け渡し用のファイルに書けない", ex);
-            registryNote = Strings.T("登録には回せませんでした: {message}", ("message", ex.Message));
-        }
-        PlayerLog.Info($"レース {raceIndex + 1} の名前: {ev.Detail}");
-        // 補助の設定を変えたら、プロファイルの部分の設定も付け直す(csv は同じなので、設定だけ)
-        if (data.ContainsKey("assists"))
-        {
-            var profileError = s.UpdateProfiles(Profiles);
-            if (profileError != null) PlayerLog.Error($"車のプロファイルを保存できない: {profileError}");
-        }
-        SendSession(keepVideo: true);
-        Toast(message: Strings.T("名前を保存しました。{note}", ("note", registryNote)), sec: 6);
-    }
+    /// <summary>IShell: 画面からのメッセージの処理を終えてから続ける(閉じるまで待つ画面とページの読み直しは、その後で。PickFolderAsync の説明)</summary>
+    public async Task AfterMessageAsync() => await Dispatcher.InvokeAsync(() => { });
 
     /// <summary>覚えていたウィンドウの位置と大きさに戻す。今つながっている画面の外(モニターを外したときなど)なら使わない</summary>
     private void RestorePlacement()
@@ -908,6 +351,10 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
-    private void Post(object message) =>
-        Web.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(message, JsonOptions));
+    /// <summary>記録を書き換えたので、画面へ送り直す(動画の位置はそのまま)</summary>
+    private void RefreshSession() => _video.SendSession(keepVideo: true);
+
+    /// <summary>IShell: 画面へ送る</summary>
+    public void Post(HostMessage message) =>
+        Web.CoreWebView2?.PostWebMessageAsJson(MessageJson.Serialize(message));
 }

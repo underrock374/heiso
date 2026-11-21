@@ -1,3 +1,5 @@
+using Fh6.Core;
+
 namespace Fh6.Recorder;
 
 public sealed class RecorderOptions
@@ -30,12 +32,8 @@ public sealed class RecorderOptions
     /// <summary>画面の速度の単位: "auto"(Windows の地域が米国か英国なら mph、それ以外は km/h)/ "kmh" / "mph"</summary>
     public string SpeedUnit { get; set; } = "auto";
 
-    /// <summary>今使う速度の単位("kmh" か "mph")。自動は再生アプリ(units.js)と同じ決め方</summary>
-    public string ResolveSpeedUnit() => SpeedUnit switch
-    {
-        "kmh" or "mph" => SpeedUnit,
-        _ => System.Globalization.RegionInfo.CurrentRegion.TwoLetterISORegionName is "US" or "GB" ? "mph" : "kmh",
-    };
+    /// <summary>今使う速度の単位("kmh" か "mph")。自動の決め方は再生アプリと共通(Fh6.Core の DisplayUnits)</summary>
+    public string ResolveSpeedUnit() => DisplayUnits.ResolveSpeed(SpeedUnit, DisplayUnits.AutoImperial());
 
     public string ResolveOutputDir()
     {

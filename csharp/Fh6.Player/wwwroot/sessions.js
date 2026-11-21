@@ -18,7 +18,7 @@ const Sessions = {
 
   request() {
     $("slBody").innerHTML = `<tr><td colspan="9" class="muted">${escapeHtml(t("読み込み中…"))}</td></tr>`;
-    host.postMessage({ type: "sessionList", archive: this.archive });
+    sendToHost({ type: "sessionList", archive: this.archive });
   },
 
   setArchive(on) {
@@ -127,7 +127,7 @@ const Sessions = {
   openSelected() {
     if (!this.selected) return;
     $("sessionsDlg").close();
-    host.postMessage({ type: "sessionOpen", path: this.selected });
+    sendToHost({ type: "sessionOpen", path: this.selected });
   },
 
   startRename() {
@@ -146,7 +146,7 @@ const Sessions = {
     const rest = $("slRenameText").value.trim();
     if (/[\\/:*?"<>|]/.test(rest)) { $("slMsg").textContent = t("フォルダ名に使えない文字があります"); $("slMsg").classList.add("error"); return; }
     $("slRenameRow").hidden = true;
-    host.postMessage({ type: "sessionRename", path: s.path, rest, archive: this.archive });
+    sendToHost({ type: "sessionRename", path: s.path, rest, archive: this.archive });
   },
 
   doMove() {
@@ -156,7 +156,7 @@ const Sessions = {
       ? t("{n} 本の記録を保存先へ戻しますか？", { n: paths.length })
       : t("{n} 本の記録を、動画も含めてアーカイブ(保存先の archive)へ移しますか？", { n: paths.length });
     if (!confirm(q)) return;
-    host.postMessage({ type: "sessionMove", paths, archive: this.archive });
+    sendToHost({ type: "sessionMove", paths, archive: this.archive });
   },
 };
 
@@ -174,8 +174,8 @@ function fmtBytes(b) {
 }
 
 $("open").onclick = () => Sessions.open();
-$("slFolder").onclick = () => { $("sessionsDlg").close(); host.postMessage({ type: "open" }); };
-$("slPickRoot").onclick = () => host.postMessage({ type: "sessionPickRoot", archive: Sessions.archive });
+$("slFolder").onclick = () => { $("sessionsDlg").close(); sendToHost({ type: "open" }); };
+$("slPickRoot").onclick = () => sendToHost({ type: "sessionPickRoot", archive: Sessions.archive });
 for (const b of document.querySelectorAll("[data-sltab]")) b.onclick = () => Sessions.setArchive(b.dataset.sltab === "archive");
 $("slText").oninput = () => Sessions.render();
 $("slCar").onchange = () => Sessions.render();

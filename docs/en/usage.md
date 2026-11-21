@@ -392,7 +392,7 @@ Switch between the recording and assigned videos with **Video** (動画) at the 
 
    ![Searching for the replay](../images/usage/09-player-replay-searching.png)
 
-3. The result is shown for each race. A replay is searched for only between a race's finish and the start of the next race (so even if you drove the same course several times and recorded the replay at the end, you can tell which race it belongs to). For a race where it was found, the video time where the replay starts and the confidence (high or low) are shown. Click **Use** (採用), and **Video** at the top switches to the replay
+3. The result is shown for each race. A replay is searched for only between a race's finish and the start of the next race (so even if you drove the same course several times and recorded the replay at the end, you can tell which race it belongs to). For a race where it was found, the video time where the replay starts and the confidence (high or low) are shown. Click **Use** (採用), and **Video** at the top switches to the replay. For a race that already has a replay assigned, the current matching and a **Show** button are shown. Clicking **Use** or **Match manually** there asks before re-creating it (the current matching, including fine-tuning, is lost)
 
    ![The replay was found](../images/usage/10-player-replay-found.png)
 
@@ -421,7 +421,7 @@ When a replay is newly assigned, this window opens with the video already moved 
 
 3. Play from a little before; when the brake lights and the shift sounds match the graph, you're done. The shift is saved immediately
 
-Assignments are saved in the recording (`session.json`), and appear in **Video** the next time you open it. If you move a video and it can no longer be found, choose it again with **Choose video again…** (動画を選び直す…) under **This video** (この動画) in the right panel. **Unassign** (割り当てを外す) removes an assignment (the video file is not deleted).
+Assignments are saved in the recording (`session.json`), and appear in **Video** the next time you open it. A recording opens with the video you were last watching in it (if you switched back to the recording before closing, it opens with the recording). If you move a video and it can no longer be found, choose it again with **Choose video again…** (動画を選び直す…) under **This video** (この動画) in the right panel. **Unassign** (割り当てを外す) removes an assignment (the video file is not deleted).
 
 If you assigned a video to the wrong race, or no longer need it, choose that video with **Video** at the top, click **Unassign** under **This video** in the right panel, and click "OK" in the confirmation dialog. After unassigning, **Video** at the top goes back to the recording.
 

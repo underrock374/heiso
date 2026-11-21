@@ -8,24 +8,9 @@ const PW_CURVE = "#e6e8eb";
 const PW_NOW = "#ffcc33";
 const PW_AFTER = "#e0a33a";
 
-/** カーブ [[rpm, hp], ...] の rpm の出力(区切りの間は直線で。範囲の外は null) */
-function pwAt(curve, rpm) {
-  if (!curve || !curve.length || rpm == null) return null;
-  const half = 125;
-  if (rpm < curve[0][0] - half || rpm > curve[curve.length - 1][0] + half) return null;
-  if (rpm <= curve[0][0]) return curve[0][1];
-  for (let k = 1; k < curve.length; k++) {
-    if (rpm <= curve[k][0]) {
-      const [r0, p0] = curve[k - 1], [r1, p1] = curve[k];
-      return p0 + (p1 - p0) * (rpm - r0) / (r1 - r0);
-    }
-  }
-  return curve[curve.length - 1][1];
-}
-
 const PowerChart = {
   canvas: null,
-  data: null,       // 系列(rpm・gear・accel・perfCar・perf を使う)
+  data: null,       // 系列(rpm・gear・full・perfCar・perf・readout を使う。今の点の出力と変速した後の点は C# の PerfReadout が出した readout)
   _last: null,
 
   init(canvas) {
@@ -60,22 +45,17 @@ const PowerChart = {
   },
 
   /**
-   * 読み取り値用: { hp(今の回転数の全開の出力), opt(今のギアの最適な変速回転数。null = リミッターまで / undefined = 分からない),
-   * range(今のギアの最適な範囲 [下, 上]。無ければ null), limiter(リミッターの回転数),
-   * ratio(次のギアとの比。分からなければ null), curve(カーブがあるか) }
+   * 読み取り値用: { opt(今のギアの最適な変速回転数。null = リミッターまで / undefined = 分からない),
+   * range(今のギアの最適な範囲 [下, 上]。無ければ null), limiter(リミッターの回転数) }
    */
   info(pos) {
     const car = this.carAt(pos), d = this.data;
     if (!car || pos == null || pos < 0) return null;
     const g = d.gear[pos];
     return {
-      hp: car.curve ? pwAt(car.curve, d.rpm[pos]) : null,
       opt: g != null && g in car.opt ? car.opt[g] : undefined,
-      ratio: g != null && car.ratios[g] ? car.ratios[g] : null,
       range: g != null && car.range && car.range[g] ? car.range[g] : null,
       limiter: car.limiter ?? null,
-      nextUsed: g != null && !!car.gears && car.gears.includes(g + 1),   // 次のギアをこの記録で使ったか
-      curve: !!car.curve,
     };
   },
 
@@ -152,12 +132,11 @@ const PowerChart = {
     }
 
     // 今の点と、今すぐ変速した場合の点(全開のときだけ意味がある。部分開度は今の点を灰色の輪に)
-    const now = pwAt(curve, rpm);
+    const now = d.readout.hp[pos];
     if (now == null) return;
-    const full = d.accel[pos] != null && d.accel[pos] >= PERF_FULL_PCT;
-    const ratio = gear != null ? car.ratios[gear] : null;
-    if (full && ratio) {
-      const r2 = rpm * ratio, p2 = pwAt(curve, r2);
+    const full = d.full[pos] === 1;
+    const r2 = d.readout.rpmAfter[pos], p2 = d.readout.hpAfter[pos];
+    if (full && r2 != null) {
       if (p2 != null) {
         g.strokeStyle = PW_AFTER;
         g.setLineDash([3 * dpr, 3 * dpr]);
@@ -184,5 +163,5 @@ const PowerChart = {
 };
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { PowerChart, pwAt };
+  module.exports = { PowerChart };
 }

@@ -189,7 +189,7 @@ OBS の WebSocket で認証をオンにしている場合だけ必要です。
 
 1. `HeisoRecorder` のフォルダの `appsettings.Local.example.json` をコピーし、名前を `appsettings.Local.json` にする
 2. メモ帳で開き、`"Password"` の値を OBS の WebSocket のパスワードに書き換える
-3. `"OutputDir"` は記録を保存するフォルダです。既定(「ビデオ\FH6Recorder」)でよければ、その行を消します。別の場所にするなら書き換えます(`\` は `\\` と 2 つ重ねて書きます)
+3. `"OutputDir"` は記録を保存するフォルダです。空(`""`)のままなら、既定の「ビデオ\FH6Recorder」に保存します。別の場所にするなら書き換えます(例: `"D:\\FH6Recorder"`。`\` は `\\` と 2 つ重ねて書きます)
 
 ```json
 {

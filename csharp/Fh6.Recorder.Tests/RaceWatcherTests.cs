@@ -43,7 +43,7 @@ public sealed class RaceWatcherTests : IDisposable
         }
     }
 
-    private static JsonNode Status(RaceWatcher w) => JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(w.Snapshot()))!;
+    private static JsonNode Status(RaceWatcher w) => JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(w.Snapshot(), System.Text.Json.JsonSerializerOptions.Web))!;
 
     [Fact]
     public void 車両を登録すると次から名前で出て_コースを登録すると次から見分ける()
@@ -103,6 +103,22 @@ public sealed class RaceWatcherTests : IDisposable
         Assert.Equal("テストのコース", (string)s2.Data!["course_name"]!);
         Assert.Equal(60, (double)s2.Data!["grid_offset_m"]!, 0);
         Assert.DoesNotContain(Status(w2)["prompts"]!.AsArray(), p => (string)p!["type"]! == "course");
+    }
+
+    [Fact]
+    public void 同じ車種のカードが残っていれば_1枚目で入れた車名が残りのカードに出る()
+    {
+        var w = NewWatcher();
+        Send(w, 30);              // 未登録の車両
+        Send(w, 30, pi: 600);     // チューニングで PI が変わった(車の組が違うので別のカード)
+        var prompts = Status(w)["prompts"]!.AsArray();
+        Assert.Equal(2, prompts.Count);
+        Assert.All(prompts, p => Assert.Null(p!["knownName"]));
+
+        w.ResolveCar((string)prompts[0]!["id"]!, "Honda Civic Type R", "new", "", null);
+        var left = Assert.Single(Status(w)["prompts"]!.AsArray())!;
+        Assert.Equal(600, (int)left["sig"]!["pi"]!);
+        Assert.Equal("Honda Civic Type R", (string)left["knownName"]!);
     }
 
     [Fact]

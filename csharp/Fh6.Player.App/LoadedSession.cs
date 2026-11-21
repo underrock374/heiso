@@ -294,7 +294,7 @@ public sealed class LoadedSession
     /// is_race_on == 0 の行と gear == 11(変速動作中)は null にして線を切る。
     /// 路面は車輪ごとの数値: 0〜5 = SurfaceKind、6 = 空中。+8 = 縁石、+16 = 水たまり。停止区間は null
     /// </summary>
-    public object BuildSeries(VideoTimeMap map)
+    public SessionSeries BuildSeries(VideoTimeMap map)
     {
         var T = Table;
         var recv = T[TelemetryTable.RecvTime];
@@ -321,66 +321,72 @@ public sealed class LoadedSession
             return code;
         }).ToArray();
 
-        return new
-        {
-            t,
-            speed = Col(i => C("speed")[i], 3.6, 1),
-            accel = Col(i => C("accel")[i], 100.0 / 255, 1),
-            brake = Col(i => C("brake")[i], 100.0 / 255, 1),
-            steer = Col(i => C("steer")[i], 100.0 / 127, 1),
-            gear = Col(i => C("gear")[i] == 11 ? double.NaN : C("gear")[i], 1, 0),
-            slipF = Col(i => Avg("tire_combined_slip_fl", "tire_combined_slip_fr", i), 1, 2),
-            slipR = Col(i => Avg("tire_combined_slip_rl", "tire_combined_slip_rr", i), 1, 2),
+        double?[] x = Col(i => C("position_x")[i], 1, 1), z = Col(i => C("position_z")[i], 1, 1);
+        var surface = new SurfaceSeries(Fl: Surface("fl"), Fr: Surface("fr"), Rl: Surface("rl"), Rr: Surface("rr"));
+        var series = new SessionSeries(
+            T: t,
+            Speed: Col(i => C("speed")[i], 3.6, 1),
+            Accel: Col(i => C("accel")[i], 100.0 / 255, 1),
+            Brake: Col(i => C("brake")[i], 100.0 / 255, 1),
+            Steer: Col(i => C("steer")[i], 100.0 / 127, 1),
+            Gear: Col(i => C("gear")[i] == 11 ? double.NaN : C("gear")[i], 1, 0),
+            SlipF: Col(i => Avg("tire_combined_slip_fl", "tire_combined_slip_fr", i), 1, 2),
+            SlipR: Col(i => Avg("tire_combined_slip_rl", "tire_combined_slip_rr", i), 1, 2),
             // オーバー / アンダー(後輪 − 前輪の滑り角。正 = オーバー)とカウンター(1 = ハンドルと車の回る向きが逆)。遅いときは出さない
-            balance = Col(i => C("speed")[i] > DerivedSeries.BalanceMinSpeed
+            Balance: Col(i => C("speed")[i] > DerivedSeries.BalanceMinSpeed
                 ? DerivedSeries.SlipBalance(C("tire_slip_angle_fl")[i], C("tire_slip_angle_fr")[i], C("tire_slip_angle_rl")[i], C("tire_slip_angle_rr")[i])
                 : double.NaN, 1, 2),
-            counter = idx.Select(i => on[i] != 0 && DerivedSeries.IsCounterSteer(C("steer")[i], C("angular_velocity_y")[i], C("speed")[i]) ? 1 : (int?)null).ToArray(),
-            grade = Col(i => Grade[i], 1, 1),
-            elev = Col(i => C("position_y")[i], 1, 1),
+            Counter: idx.Select(i => on[i] != 0 && DerivedSeries.IsCounterSteer(C("steer")[i], C("angular_velocity_y")[i], C("speed")[i]) ? 1 : (int?)null).ToArray(),
+            Grade: Col(i => Grade[i], 1, 1),
+            Elev: ElevSeries(idx),
             // コース図用(x = 東、z = 北。m)
-            x = Col(i => C("position_x")[i], 1, 1),
-            z = Col(i => C("position_z")[i], 1, 1),
-            turn = Col(i => Turn[i], 1, 2),
+            X: x,
+            Z: z,
+            Turn: Col(i => Turn[i], 1, 2),
             // 車体座標の加速度を G にしたもの(摩擦円と、グラフの「前後G」「横G」)。FH6 のデータ出力は x = 右、z = 前(Forza 共通の約束)。
             // 前後は + = 加速、横は + = 右。軸の向きは実機のデータで確かめること(docs/telemetry-field-notes.md「加速度の軸」)
-            gLong = Col(i => C("acceleration_z")[i], 1 / 9.80665, 2),
-            gLat = Col(i => C("acceleration_x")[i], 1 / 9.80665, 2),
+            GLong: Col(i => C("acceleration_z")[i], 1 / 9.80665, 2),
+            GLat: Col(i => C("acceleration_x")[i], 1 / 9.80665, 2),
             // サスペンションの縮み(0 = 伸び切り、1 = 縮み切り)。荷重移動の図(前後・左右の縮みの差)に使う
-            susp = new
-            {
-                fl = Col(i => C("norm_suspension_travel_fl")[i], 1, 3), fr = Col(i => C("norm_suspension_travel_fr")[i], 1, 3),
-                rl = Col(i => C("norm_suspension_travel_rl")[i], 1, 3), rr = Col(i => C("norm_suspension_travel_rr")[i], 1, 3),
-            },
+            Susp: new SuspensionSeries(
+                Fl: Col(i => C("norm_suspension_travel_fl")[i], 1, 3), Fr: Col(i => C("norm_suspension_travel_fr")[i], 1, 3),
+                Rl: Col(i => C("norm_suspension_travel_rl")[i], 1, 3), Rr: Col(i => C("norm_suspension_travel_rr")[i], 1, 3)),
             // 性能モード(docs/spec.md「性能モード」): 回転数、今のギアの最適な変速回転数、今すぐ変速した場合の得失(全開の行だけ。%)、
             // 車の番号(perf.cars の位置。性能を出せない行は null)
-            rpm = Col(i => C("current_engine_rpm")[i], 1, 0),
+            Rpm: Col(i => C("current_engine_rpm")[i], 1, 0),
             // 最適な範囲(得失が ±3% 以内)の下と上。出力が平らな車では広く、リミッターまで引っ張る方が得なギアではリミッターの手前
-            optRpm = Col(i => RangeAt(i) is { } x ? x.Lo : double.NaN, 1, 0),
-            optRpmHi = Col(i => RangeAt(i) is { } x ? x.Hi : double.NaN, 1, 0),
+            OptRpm: Col(i => RangeAt(i) is { } x ? x.Lo : double.NaN, 1, 0),
+            OptRpmHi: Col(i => RangeAt(i) is { } x ? x.Hi : double.NaN, 1, 0),
             // リミッターに張り付いている間は、回転数がリミッターの下まで上下しても「早い」にしない(負を 0 に)
-            gain = Col(i => C("accel")[i] >= PowerAnalysis.FullThrottle && C("gear")[i] != 11 && ProfileAt(i)?.Gain((int)C("gear")[i], C("current_engine_rpm")[i]) is double g
+            Gain: Col(i => C("accel")[i] >= PowerAnalysis.FullThrottle && C("gear")[i] != 11 && ProfileAt(i)?.Gain((int)C("gear")[i], C("current_engine_rpm")[i]) is double g
                 ? (LimiterBounce[i] && g < 0 ? 0 : g) : double.NaN, 1, 1),
-            perfCar = idx.Select(i => on[i] == 1 && _carOfRow.TryGetValue(i, out var k) ? k : (int?)null).ToArray(),
-            perf = new
-            {
-                cars = Power.Select(x => new
-                {
-                    ordinal = x.Profile.Ordinal, pi = x.Profile.Pi,
-                    curve = x.Profile.Curve == null ? null : x.Profile.Curve.Rpm.Select((r, k) => new[] { r, x.Profile.Curve.Hp[k] }).ToArray(),
-                    maxHp = x.Profile.Curve?.MaxHp,
+            // 全開か(1 / 0。アクセルの無い行は null)。得失の段の灰色の帯、パワーカーブの今の点、読み取り値の「全開でない」に使う
+            Full: idx.Select(i => on[i] == 0 || !double.IsFinite(C("accel")[i]) ? (int?)null : C("accel")[i] >= PowerAnalysis.FullThrottle ? 1 : 0).ToArray(),
+            PerfCar: idx.Select(i => on[i] == 1 && _carOfRow.TryGetValue(i, out var k) ? k : (int?)null).ToArray(),
+            Perf: new PerfData(
+                Cars: Power.Select(x => new PerfCarInfo(
+                    Ordinal: x.Profile.Ordinal, Pi: x.Profile.Pi,
+                    Curve: x.Profile.Curve == null ? null : x.Profile.Curve.Rpm.Select((r, k) => new[] { r, x.Profile.Curve.Hp[k] }).ToArray(),
+                    MaxHp: x.Profile.Curve?.MaxHp,
                     // カーブを何本の記録の車のプロファイルから作ったか(この記録だけなら null)
-                    source = PowerSources.TryGetValue((x.Profile.Ordinal, x.Profile.Pi), out var src)
-                        ? new { recordings = src.Recordings, races = src.Races, other = src.Other } : null,
-                    limiter = x.Profile.LimiterRpm,
+                    Source: PowerSources.TryGetValue((x.Profile.Ordinal, x.Profile.Pi), out var src) ? src : null,
+                    Limiter: x.Profile.LimiterRpm,
                     // この記録で使ったギア(全開でなくても)。次のギアの比が無いとき、「上のギアを使っていない」か「行が足りない」かを分ける
-                    gears = x.Rows.Select(i => C("gear")[i]).Where(g => g >= 1 && g <= 10).Distinct().OrderBy(g => g).Select(g => (int)g).ToArray(),
-                    range = (x.Profile.OptimalRange ?? new Dictionary<int, (double Lo, double Hi)>()).ToDictionary(kv => kv.Key.ToString(), kv => new[] { kv.Value.Lo, kv.Value.Hi }),
-                    ratios = x.Profile.Ratios.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
-                    opt = x.Profile.OptimalRpm.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
-                }).ToArray(),
-            },
-            surface = new { fl = Surface("fl"), fr = Surface("fr"), rl = Surface("rl"), rr = Surface("rr") },
+                    Gears: x.Rows.Select(i => C("gear")[i]).Where(g => g >= 1 && g <= 10).Distinct().OrderBy(g => g).Select(g => (int)g).ToArray(),
+                    Range: (x.Profile.OptimalRange ?? new Dictionary<int, (double Lo, double Hi)>()).ToDictionary(kv => kv.Key.ToString(), kv => new[] { kv.Value.Lo, kv.Value.Hi }),
+                    Ratios: x.Profile.Ratios.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+                    Opt: x.Profile.OptimalRpm.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value))).ToArray()),
+            Readout: null!,
+            Friction: null!,
+            Surface: surface,
+            // コース図の線(路面の色のもとになる分類と、線を切る行)
+            Course: new CourseSeries(Surface: CourseLine.SurfaceKinds(surface), Breaks: CourseLine.BreakRows(x, z)));
+        // 性能モードの読み取り値は、出来た系列の値(画面が見るのと同じ丸めた値)から出す
+        return series with
+        {
+            Readout = PerfReadout.Build(series),
+            // 摩擦円・荷重移動の、ならしの幅とレースの選び方によらない値
+            Friction = new FrictionSeries(Group: FrictionStatic.SurfaceGroups(series.Surface), Wheels: FrictionStatic.WheelBars(series.T, series.Susp)),
         };
     }
 
@@ -401,66 +407,70 @@ public sealed class LoadedSession
     private PowerProfile? ProfileAt(int i) => _carOfRow.TryGetValue(i, out var k) ? Power[k].Profile : null;
 
     /// <summary>スタート・接触・着地・ジャンプ。時刻 t は動画の秒</summary>
-    public object BuildMarks(VideoTimeMap map)
+    public SessionMarks BuildMarks(VideoTimeMap map)
     {
         var recv = Table[TelemetryTable.RecvTime];
         double T(int i) => Math.Round(map.ToVideoSec(recv[i]), 3);
         var pos = SeriesPositions();
-        return new
-        {
-            starts = Starts.Select(s => new { t = T(s.Index), race = s.IsRace, kind = s.Kind.ToString().ToLowerInvariant() }).ToArray(),
-            contacts = Contacts.Select(c => new
-            {
-                t = T(c.Index), landing = c.Kind == ContactKind.Landing, g = Math.Round(c.PeakG, 1),
-                before = c.SpeedBeforeKmh, after = c.SpeedAfterKmh,
-            }).ToArray(),
+        var elev = ElevSeries(SeriesRows());
+        var races = Races.Select(r => (Race: r, Dist: BuildRaceDistance(r.Segment, pos))).ToList();
+        return new SessionMarks(
+            Starts: Starts.Select(s => new StartMark(T: T(s.Index), Race: s.IsRace, Kind: s.Kind.ToString().ToLowerInvariant())).ToArray(),
+            Contacts: Contacts.Select(c => new ContactMark(
+                T: T(c.Index), Landing: c.Kind == ContactKind.Landing, G: Math.Round(c.PeakG, 1),
+                Before: c.SpeedBeforeKmh, After: c.SpeedAfterKmh)).ToArray(),
             // 画面で強調するのは、スリップか停止区間(リワインドなど)を伴うものだけ
-            excursions = Excursions.Where(e => e.Consequential).Select(e => new
+            Excursions: Excursions.Where(e => e.Consequential).Select(e =>
             {
-                t0 = T(e.StartIndex), t1 = T(e.EndIndex),
-                wheels = e.Wheels.Select(w => Wheels[w]).ToArray(),
-                surfaces = e.Surfaces.Select(k => (int)k).ToArray(),
-                slipT = e.SlipIndex >= 0 ? T(e.SlipIndex) : (double?)null,
-                slipEndT = e.SlipEndIndex >= 0 ? T(e.SlipEndIndex) : (double?)null,
-                slipPeak = e.SlipPeak,
-                gap = e.EndsInGap,
+                double t0 = T(e.StartIndex), t1 = T(e.EndIndex);
+                double? slipT = e.SlipIndex >= 0 ? T(e.SlipIndex) : null, slipEndT = e.SlipEndIndex >= 0 ? T(e.SlipEndIndex) : null;
+                return new ExcursionMark(
+                    T0: t0, T1: t1,
+                    Wheels: e.Wheels.Select(w => Wheels[w]).ToArray(),
+                    Surfaces: e.Surfaces.Select(k => (int)k).ToArray(),
+                    SlipT: slipT, SlipEndT: slipEndT,
+                    // グラフのスリップの段の帯の終わり
+                    SlipBandT1: SlipBand.End(t0, t1, slipT, slipEndT),
+                    SlipPeak: e.SlipPeak,
+                    Gap: e.EndsInGap);
             }).ToArray(),
-            races = Races.Select(r => new
-            {
-                t0 = T(r.Segment.StartIndex), t1 = T(r.Segment.EndIndex), tf = T(r.Segment.FinishIndex), restart = r.Segment.Restart,
-                finished = r.Segment.LikelyFinished, finishedBy = r.Segment.FinishedBy, endKmh = r.Segment.EndSpeedKmh, course = r.Course, car = r.Car, setup = r.Setup,
-                dist = RaceDistanceSeries(r.Segment, pos),
+            Races: Races.Select((r, n) => new RaceMark(
+                T0: T(r.Segment.StartIndex), T1: T(r.Segment.EndIndex), Tf: T(r.Segment.FinishIndex), Restart: r.Segment.Restart,
+                Finished: r.Segment.LikelyFinished, FinishedBy: r.Segment.FinishedBy, EndKmh: r.Segment.EndSpeedKmh, Course: r.Course, Car: r.Car, Setup: r.Setup,
+                Dist: races[n].Dist,
+                // 標高の段の上下(このレースの行で)
+                ElevRange: DistanceAxis.ElevRange(races[n].Dist.I.Select(p => elev[p])),
                 // 自動変速(か AutoDrive)らしいか: true / false / null(分からない)と、変速回転数の 10〜90 パーセンタイル
-                auto = AutoOf(r.Segment) is { } a ? a.Auto : (bool?)null,
-                autoLo = AutoOf(r.Segment)?.Lo, autoHi = AutoOf(r.Segment)?.Hi,
-            }).ToArray(),
+                Auto: AutoOf(r.Segment) is { } a ? a.Auto : (bool?)null,
+                AutoLo: AutoOf(r.Segment)?.Lo, AutoHi: AutoOf(r.Segment)?.Hi)).ToArray(),
             // 再生時に飛ばせる区間。kind = "redo": やり直し区間(リワインド・チェックポイント逃しで捨てた走りの始まりから、戻った先で走り直すまで)、
             // "pause": 一時停止(フォトモード・ポーズメニュー。経過時間が止まった停止区間)
             // (計算は Fh6.Core の RaceSkips。配布パッケージの package.json と同じ)
-            skips = (IsReplay ? new List<SkipRange>() : RaceSkips.Find(Table, Races.Select(r => r.Segment))).Select(g => new
-            {
-                t0 = Math.Round(map.ToVideoSec(g.FromRecvTime), 3), t1 = Math.Round(map.ToVideoSec(g.ToRecvTime), 3), kind = g.Kind,
-            }).ToArray(),
-            laps = Laps.Select(l => new { t = T(l.Index), lap = l.Lap, prev = l.PrevLapSec, finish = l.IsFinish, byPosition = !l.FromLapCounter }).ToArray(),
+            Skips: (IsReplay ? new List<SkipRange>() : RaceSkips.Find(Table, Races.Select(r => r.Segment))).Select(g => new SkipMark(
+                T0: Math.Round(map.ToVideoSec(g.FromRecvTime), 3), T1: Math.Round(map.ToVideoSec(g.ToRecvTime), 3), Kind: g.Kind)).ToArray(),
+            Laps: Laps.Select(l => new LapMark(T: T(l.Index), Lap: l.Lap, Prev: l.PrevLapSec, Finish: l.IsFinish, ByPosition: !l.FromLapCounter)).ToArray(),
             // 全開のシフトアップ。verdict: early / ok / late(得失を出せなければ null)
-            shifts = Shifts.Select(s => new
-            {
-                t = T(s.Index), from = s.FromGear, rpm = s.Rpm, gain = s.GainPct, verdict = s.Verdict?.ToString().ToLowerInvariant(),
-                limiterSec = Math.Round(s.LimiterMs / 1000, 1),
-                auto = Races.Any(r => s.Index >= r.Segment.StartIndex && s.Index <= r.Segment.EndIndex && AutoOf(r.Segment) is { Auto: true }),
-            }).ToArray(),
-            jumps = Jumps.Select(j => new
-            {
-                t0 = T(j.StartIndex), t1 = T(j.EndIndex), sec = j.DurationSec, kmh = j.TakeoffKmh, drop = j.DropM,
-            }).ToArray(),
-        };
+            Shifts: Shifts.Select(s => new ShiftMark(
+                T: T(s.Index), From: s.FromGear, Rpm: s.Rpm, Gain: s.GainPct, Verdict: s.Verdict?.ToString().ToLowerInvariant(),
+                LimiterSec: Math.Round(s.LimiterMs / 1000, 1),
+                Auto: Races.Any(r => s.Index >= r.Segment.StartIndex && s.Index <= r.Segment.EndIndex && AutoOf(r.Segment) is { Auto: true }))).ToArray(),
+            Jumps: Jumps.Select(j => new JumpMark(
+                T0: T(j.StartIndex), T1: T(j.EndIndex), Sec: j.DurationSec, Kmh: j.TakeoffKmh, Drop: j.DropM)).ToArray(),
+            // 標高の段の上下(レースを選んでいないとき。記録全体の走行中の行で)
+            ElevRange: DistanceAxis.ElevRange(elev),
+            // やり直した走りの行(系列の中の位置)。コース図で薄く描く
+            Cut: DistanceAxis.CutRows(races.Select(x => x.Dist)),
+            // 摩擦円・荷重移動の円の推定と点群から除く行(系列の中の位置。接触・ジャンプのまわり)
+            GgExcluded: FrictionStatic.ExcludedRows(
+                SeriesRows().Select(i => Math.Round(map.ToVideoSec(recv[i]), 4)).ToArray(),
+                Contacts.Select(c => T(c.Index)), Jumps.Select(j => (T(j.StartIndex), T(j.EndIndex)))));
     }
 
     /// <summary>
     /// 距離軸: レースの行の、系列の中の位置 i、スタートからの距離 d(m)、最後まで残った走りか k(1/0)。
     /// 停止区間の行は含めない。系列の位置は BuildSeries の t の並び(recv_time の順)
     /// </summary>
-    private object RaceDistanceSeries(RaceSegment seg, int[] pos)
+    private RaceDistanceSeries BuildRaceDistance(RaceSegment seg, int[] pos)
     {
         var (dist, kept) = RaceDistance.Compute(Table["is_race_on"], Table["position_x"], Table["position_z"], seg.StartIndex, seg.EndIndex);
         var i = new List<int>();
@@ -474,7 +484,7 @@ public sealed class LoadedSession
             d.Add(Math.Round(dist[j], 1));
             k.Add(kept[j] ? 1 : 0);
         }
-        return new { i, d, k };
+        return new RaceDistanceSeries(I: i, D: d, K: k, Graph: DistanceAxis.GraphRows(d, k));
     }
 
     // ---- 計測モード(docs/spec.md「計測モード」): 車のプロファイル ----
@@ -569,9 +579,9 @@ public sealed class LoadedSession
     /// 計測モードの画面に渡す値: この記録の車ごとに、プロファイルの値・回転数の帯の判定・補助の設定の組ごとの限界と次の 1 本の指示。
     /// races は記録のレースごとの車と補助の設定(画面で、選んでいるレースの車と組を出すため)
     /// </summary>
-    public object BuildMeasure()
+    public MeasureData BuildMeasure()
     {
-        object Lim(CarProfile.Limit l) => new { g = l.G, rows = l.Rows, measured = l.Measured };
+        MeasureLimit Lim(CarProfile.Limit l) => new(G: l.G, Rows: l.Rows, Measured: l.Measured);
         var cars = _profiles.Select(kv =>
         {
             var (car, file) = (kv.Key, kv.Value);
@@ -585,45 +595,39 @@ public sealed class LoadedSession
                 var p = CarProfile.ForAssists(file, reps[k]);
                 var e = MeasurementEvaluator.Evaluate(p);
                 var surfaces = new[] { "paved", "dirt", "grass", "snow" }.Where(s => s == "paved" || p.HasSurface(s));
-                return new
-                {
-                    parts = file.Parts.Count(x => AssistKey.Of(x.Assists) == k),
-                    limits = surfaces.ToDictionary(s => s, s => new
-                    {
-                        brake = Lim(p.BrakeAll(s)),
-                        brakeBySpeed = p.Brake(s).ToDictionary(b => b.Key.ToString(), b => Lim(b.Value)),
-                        left = Lim(p.Corner(s, "left")),
-                        right = Lim(p.Corner(s, "right")),
-                        launch = Lim(p.Launch(s)),
-                    }),
-                    advice = e.Advice.Select(a => new { kind = a.Kind.ToString(), from = a.From, to = a.To, gear = a.Gear, kmh = a.Kmh, surface = a.Surface, side = a.Side }).ToArray(),
-                };
+                return new MeasureGroup(
+                    Parts: file.Parts.Count(x => AssistKey.Of(x.Assists) == k),
+                    Limits: surfaces.ToDictionary(s => s, s => new MeasureLimits(
+                        Brake: Lim(p.BrakeAll(s)),
+                        BrakeBySpeed: p.Brake(s).ToDictionary(b => b.Key.ToString(), b => Lim(b.Value)),
+                        Left: Lim(p.Corner(s, "left")),
+                        Right: Lim(p.Corner(s, "right")),
+                        Launch: Lim(p.Launch(s)))),
+                    Advice: e.Advice.Select(a => new MeasureAdvice(Kind: a.Kind.ToString(), From: a.From, To: a.To, Gear: a.Gear, Kmh: a.Kmh, Surface: a.Surface, Side: a.Side)).ToArray());
             });
             var top = all.Top();
-            return new
-            {
-                key = ProfileCar.KeyOf(car), name = file.Car.Name, pi = car.Pi, drivetrain = car.Drivetrain, cylinders = car.Cylinders,
-                parts = file.Parts.Count, recordings = file.Parts.Select(p => p.Folder).Distinct().Count(),
-                seconds = Math.Round(file.Parts.Sum(p => p.Seconds)),
-                curve = curve?.Rpm.Select((r, i) => new[] { r, curve.Hp[i] }).ToArray(),
-                maxHp = curve?.MaxHp, peakRpm = curve?.PeakRpm,
-                limiter = eval.Limiter,
-                ratios = all.Ratios().ToDictionary(r => r.Key.ToString(), r => r.Value),
-                gears = all.GearsSeen().ToArray(),
-                top = top == null ? null : new { gear = top.Gear, kmh = top.Kmh, rpm = top.Rpm },
-                coverage = all.Coverage().ToDictionary(g => g.Key.ToString(), g => g.Value.ToDictionary(b => b.Key.ToString(), b => b.Value)),
-                usedFrom = eval.UsedFrom,
-                bands = eval.Bands.Select(b => new { from = b.From, to = b.To, rows = b.Rows, state = b.State.ToString().ToLowerInvariant() }).ToArray(),
-                groups,
-            };
+            return new MeasureCar(
+                Key: ProfileCar.KeyOf(car), Name: file.Car.Name, Pi: car.Pi, Drivetrain: car.Drivetrain, Cylinders: car.Cylinders,
+                Parts: file.Parts.Count, Recordings: file.Parts.Select(p => p.Folder).Distinct().Count(),
+                Seconds: Math.Round(file.Parts.Sum(p => p.Seconds)),
+                Curve: curve?.Rpm.Select((r, i) => new[] { r, curve.Hp[i] }).ToArray(),
+                MaxHp: curve?.MaxHp, PeakRpm: curve?.PeakRpm,
+                Limiter: eval.Limiter,
+                Ratios: all.Ratios().ToDictionary(r => r.Key.ToString(), r => r.Value),
+                Gears: all.GearsSeen().ToArray(),
+                Top: top == null ? null : new MeasureTop(Gear: top.Gear, Kmh: top.Kmh, Rpm: top.Rpm),
+                Coverage: all.Coverage().ToDictionary(g => g.Key.ToString(), g => g.Value.ToDictionary(b => b.Key.ToString(), b => b.Value)),
+                UsedFrom: eval.UsedFrom,
+                Bands: eval.Bands.Select(b => new MeasureBand(From: b.From, To: b.To, Rows: b.Rows, State: b.State.ToString().ToLowerInvariant())).ToArray(),
+                Groups: groups);
         }).ToArray();
         var races = Races.Select(r =>
         {
             var a = AssistsOf(r.Segment);
             var car = RaceCar(r.Segment);
-            return new { car = car is CarSignature c ? ProfileCar.KeyOf(c) : null, assists = a, assistKey = AssistKey.Of(a) };
+            return new MeasureRace(Car: car is CarSignature c ? ProfileCar.KeyOf(c) : null, Assists: a, AssistKey: AssistKey.Of(a));
         }).ToArray();
-        return new { cars, races };
+        return new MeasureData(Cars: cars, Races: races);
     }
 
     /// <summary>系列に入れる行の番号(recv_time のある行を recv_time の順に。同じ時刻なら行の順)</summary>
@@ -631,6 +635,14 @@ public sealed class LoadedSession
     {
         var recv = Table[TelemetryTable.RecvTime];
         return Enumerable.Range(0, Table.RowCount).Where(i => double.IsFinite(recv[i])).OrderBy(i => recv[i]).ToArray();
+    }
+
+    /// <summary>系列の標高(m、小数 1 桁)。走行中でない行は null</summary>
+    private double?[] ElevSeries(int[] idx)
+    {
+        var on = Table["is_race_on"];
+        var y = Table["position_y"];
+        return idx.Select(i => on[i] == 0 || !double.IsFinite(y[i]) ? (double?)null : Math.Round(y[i], 1)).ToArray();
     }
 
     /// <summary>行番号 → 系列(BuildSeries の t)の中の位置。recv_time が無い行は -1</summary>

@@ -191,7 +191,7 @@ Needed only if you turned on authentication for OBS's WebSocket.
 
 1. In the `HeisoRecorder` folder, copy `appsettings.Local.example.json` and rename the copy to `appsettings.Local.json`
 2. Open it in Notepad and change the value of `"Password"` to OBS's WebSocket password
-3. `"OutputDir"` is the folder where recordings are saved. If the default ("Videos\FH6Recorder") is fine, delete that line. To use another place, change it (write `\` as `\\`)
+3. `"OutputDir"` is the folder where recordings are saved. Left empty (`""`), recordings go to the default "Videos\FH6Recorder". To use another place, change it (for example `"D:\\FH6Recorder"`; write `\` as `\\`)
 
 ```json
 {

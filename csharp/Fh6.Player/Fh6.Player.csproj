@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Fh6.Core\Fh6.Core.csproj" />
+    <ProjectReference Include="..\Fh6.Player.App\Fh6.Player.App.csproj" />
   </ItemGroup>
 
   <ItemGroup>

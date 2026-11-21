@@ -16,6 +16,7 @@ const CourseView3D = {
   data: null,
   rows: null,         // 描く行(系列の中の位置、昇順)
   cut: null,          // 系列の位置 → 1 ならやり直し区間
+  brk: null,          // 系列の位置 → 1 なら、その行で線を切る
   colors: null,       // 系列の位置 → 路面の色 [r, g, b](0〜1)か null
   colorMode: "lap",   // "lap"(今の周を青)/ "surface"(路面の色)
   zoom: null,
@@ -30,7 +31,6 @@ const CourseView3D = {
   getNow: null,
   onViewChange: null, // (view) => void。マウスで視点を動かしたとき(設定の表示を合わせる)
 
-  JUMP_M: 50,
   ROAD_PX: 6,         // 道の帯の幅(画面の px。近づくと実際の道幅 8m より細くはしない)
   ROAD_MIN_M: 8,
 
@@ -58,9 +58,10 @@ const CourseView3D = {
     return true;
   },
 
-  setRows(data, rows, cut, colors) {
+  setRows(data, rows, cut, colors, brk) {
     this.data = data;
     this.cut = cut || null;
+    this.brk = brk || null;
     this.colors = colors || null;
     if (!data) { this.rows = null; this._count = 0; this._redraw(); return; }
     const all = rows || data.t.map((_, i) => i);
@@ -117,7 +118,7 @@ const CourseView3D = {
     const idx = [];
     this._idxOffset = new Int32Array(n);
     const RESTART = 0xffffffff;
-    const jumped = (k) => k > 0 && Math.hypot(x[rows[k]] - x[rows[k - 1]], z[rows[k]] - z[rows[k - 1]]) > this.JUMP_M;
+    const jumped = (k) => k > 0 && this.brk[rows[k]] === 1;
     for (let k = 0; k < n; k++) {
       const i = rows[k];
       // 進む向き(前後の行から。飛びの所は片側だけ)
@@ -238,7 +239,7 @@ const CourseView3D = {
 
   /** 行 k の進む向き(世界座標の水平の角度)。前後 6m ずつ離れた点を結んだ方向(位置の細かいぶれで振れないように) */
   _heading(k) {
-    const h = courseHeading(this.data, this.rows, k);
+    const h = courseHeading(this.data, this.rows, k, this.brk);
     return h ? Math.atan2(h[0], -h[1]) : null;   // 世界座標は Z = 南なので、北向きの成分を反転
   },
 
@@ -246,7 +247,7 @@ const CourseView3D = {
   _stepCamera(k) {
     const key = `${this.zoom}|${this.rows.length}|${this.rows[0]}`;
     if (this._sectionKey !== key) {
-      this._sections = buildFollowSections(this.data, this.rows, this.zoom);
+      this._sections = buildFollowSections(this.data, this.rows, this.zoom, this.brk);
       this._sectionKey = key;
       this._stepTo = null;
     }

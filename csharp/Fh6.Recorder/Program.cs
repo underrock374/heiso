@@ -64,7 +64,7 @@ app.Use(async (ctx, next) =>
         if (k != key.Value)
         {
             ctx.Response.StatusCode = 401;
-            await ctx.Response.WriteAsJsonAsync(new { error = Strings.T("合言葉が違います。PCの画面に出ているQRコードから開き直してください") });
+            await ctx.Response.WriteAsJsonAsync(new ApiError(Strings.T("合言葉が違います。PCの画面に出ているQRコードから開き直してください")));
             return;
         }
     }
@@ -72,7 +72,7 @@ app.Use(async (ctx, next) =>
 });
 // 画面の言語の辞書(Fh6.Core の strings.json から)。i18n.js より前に読む。合言葉なしで読める(秘密ではない)
 app.MapGet("/i18n-data.js", () => Results.Text(
-    "window.HEISO_I18N = " + System.Text.Json.JsonSerializer.Serialize(new { lang = Strings.Language, strings = Strings.Dictionary(Strings.Language) }) + ";",
+    "window.HEISO_I18N = " + System.Text.Json.JsonSerializer.Serialize(Strings.PageData(), System.Text.Json.JsonSerializerOptions.Web) + ";",
     "text/javascript; charset=utf-8"));
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
@@ -85,22 +85,22 @@ app.MapGet("/api/status", () => Results.Json(controller.GetStatus()));
 app.MapPost("/api/start", async (StartRequest? req) =>
 {
     var (ok, error) = await controller.StartAsync(req?.Video ?? true, req?.Label, req?.Quality);
-    return ok ? Results.Json(controller.GetStatus()) : Results.Json(new { error }, statusCode: 409);
+    return ok ? Results.Json(controller.GetStatus()) : Results.Json(new ApiError(error), statusCode: 409);
 });
 
 app.MapPost("/api/stop", async () =>
 {
     var (ok, error) = await controller.StopAsync();
-    return ok ? Results.Json(controller.GetStatus()) : Results.Json(new { error }, statusCode: 409);
+    return ok ? Results.Json(controller.GetStatus()) : Results.Json(new ApiError(error), statusCode: 409);
 });
 
 // 録画の画質の段階を選ぶ(次の記録から使う。保存先フォルダに覚える)
 app.MapPost("/api/quality", (QualityRequest? req) =>
 {
     if (req?.Preset is not string id || !QualityPresets.IsKnown(id))
-        return Results.Json(new { error = Strings.T("知らない画質の段階です") }, statusCode: 400);
+        return Results.Json(new ApiError(Strings.T("知らない画質の段階です")), statusCode: 400);
     if (controller.IsActive)
-        return Results.Json(new { error = Strings.T("記録中は変えられません") }, statusCode: 409);
+        return Results.Json(new ApiError(Strings.T("記録中は変えられません")), statusCode: 409);
     quality.SavePreset(id);
     return Results.Json(controller.GetStatus());
 });
@@ -109,7 +109,7 @@ app.MapPost("/api/quality", (QualityRequest? req) =>
 app.MapPost("/api/scene", (SceneRequest? req) =>
 {
     if (controller.IsActive)
-        return Results.Json(new { error = Strings.T("記録中は変えられません") }, statusCode: 409);
+        return Results.Json(new ApiError(Strings.T("記録中は変えられません")), statusCode: 409);
     scene.SaveScene(req?.Scene);
     return Results.Json(controller.GetStatus());
 });
@@ -117,14 +117,14 @@ app.MapPost("/api/scene", (SceneRequest? req) =>
 app.MapPost("/api/marker", (MarkerRequest? req) =>
 {
     var (ok, count) = controller.AddMarker(req?.Label);
-    return ok ? Results.Json(new { count }) : Results.Json(new { error = Strings.T("記録中ではありません") }, statusCode: 409);
+    return ok ? Results.Json(new MarkerResult(count)) : Results.Json(new ApiError(Strings.T("記録中ではありません")), statusCode: 409);
 });
 
 // 確認カード(車両・コース)の操作。誤りは 400 で理由を返す
 IResult RaceAction(Action act)
 {
     try { act(); return Results.Json(controller.GetStatus()); }
-    catch (UserError ex) { return Results.Json(new { error = ex.Message }, statusCode: 400); }
+    catch (UserError ex) { return Results.Json(new ApiError(ex.Message), statusCode: 400); }
 }
 app.MapPost("/api/car", (CarRequest req) => RaceAction(() => race.ResolveCar(req.Id, req.Car, req.SetupChoice, req.SetupName, req.Note)));
 app.MapPost("/api/course", (CourseRequest req) => RaceAction(() => race.ResolveCourse(req.Id, req.Choice, req.Name, req.Kind, req.Note)));
@@ -138,13 +138,9 @@ app.MapGet("/api/connect-info", (HttpContext ctx) =>
     var remote = ctx.Connection.RemoteIpAddress;
     bool isLocal = remote != null && (IPAddress.IsLoopback(remote) ||
         (remote.IsIPv4MappedToIPv6 && IPAddress.IsLoopback(remote.MapToIPv4())));
-    var urls = NetworkUtil.GetCandidates().Select(a => new
-    {
-        address = a.Address,
-        name = a.InterfaceName,
-        url = $"http://{a.Address}:{opt.HttpPort}/?k={key.Value}",
-    });
-    return Results.Json(new { isLocal, urls });
+    var urls = NetworkUtil.GetCandidates()
+        .Select(a => new ConnectUrl(a.Address, a.InterfaceName, $"http://{a.Address}:{opt.HttpPort}/?k={key.Value}")).ToList();
+    return Results.Json(new ConnectInfo(isLocal, urls));
 });
 
 var localUrl = $"http://localhost:{opt.HttpPort}/?k={key.Value}";
@@ -188,11 +184,4 @@ catch (IOException ex) when (ex.InnerException is System.Net.Sockets.SocketExcep
 }
 return 0;
 
-record StartRequest(bool? Video, string? Label, string? Quality);
-record QualityRequest(string? Preset);
-record SceneRequest(string? Scene);
-record MarkerRequest(string? Label);
-record CarRequest(string Id, string? Car, string? SetupChoice, string? SetupName, string? Note);
-record CourseRequest(string Id, string? Choice, string? Name, string? Kind, string? Note);
-record DismissRequest(string Id);
-record LastRaceRequest(string? CourseChoice, string? CourseName, string? Kind, string? Car, string? SetupChoice, string? SetupName);
+// 要求と答えの型は ApiTypes.cs

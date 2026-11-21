@@ -278,5 +278,5 @@ body:not(.perf) .perfOnly { display: none; }
 .rfRow.found { border-color: var(--accent); }
 .rfRow .rfHead { font-weight: 600; }
 .rfRow .error { color: var(--error); }
-.rfRow button { align-self: flex-end; }
+.rfRow .rfBtns { display: flex; justify-content: flex-end; gap: 6px; }
 .settingsDlg input.num { flex: none; width: 90px; }

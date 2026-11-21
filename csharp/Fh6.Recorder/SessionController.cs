@@ -522,82 +522,60 @@ public sealed class SessionController : IDisposable
 
     // ---------------------------------------------------------------- status
 
-    public object GetStatus()
+    public RecorderStatus GetStatus()
     {
         var live = _telemetry.Snapshot();
-        object? session = null;
+        SessionStatus? session = null;
         lock (_lock)
         {
             if (_meta != null && _folder != null)
             {
-                session = new
-                {
-                    name = Path.GetFileName(_folder),
-                    folder = _folder,
-                    label = _meta.Session.Label,
-                    elapsedSec = Math.Round(Clock.Now() - _meta.Session.StartedRecvTime, 1),
-                    rows = _writer?.RowsWritten ?? 0,
-                    packets = _writer?.PacketsReceived ?? 0,
-                    markers = _meta.Markers.Count,
-                    videoRequested = _meta.Video.Requested,
-                    videoActive = _meta.Video.Active,
-                    quality = _meta.Video.Quality?.Preset,
-                    qualityApplied = _meta.Video.Quality?.Applied ?? false,
-                };
+                session = new SessionStatus(
+                    Name: Path.GetFileName(_folder),
+                    Folder: _folder,
+                    Label: _meta.Session.Label,
+                    ElapsedSec: Math.Round(Clock.Now() - _meta.Session.StartedRecvTime, 1),
+                    Rows: _writer?.RowsWritten ?? 0,
+                    Packets: _writer?.PacketsReceived ?? 0,
+                    Markers: _meta.Markers.Count,
+                    VideoRequested: _meta.Video.Requested,
+                    VideoActive: _meta.Video.Active,
+                    Quality: _meta.Video.Quality?.Preset,
+                    QualityApplied: _meta.Video.Quality?.Applied ?? false);
             }
         }
 
-        return new
-        {
-            state = _state.ToString().ToLowerInvariant(),
-            warning = _warning,
-            telemetry = live,
-            obs = new
-            {
-                enabled = _obs.Enabled,
-                connected = _obs.Connected,
-                recording = _obs.Recording,
-                version = _obs.ObsVersion,
-                error = _obs.LastError,
-            },
-            session,
-            last = _last,
-            race = _race?.Snapshot(),
-            quality = QualityStatus(),
-            scene = SceneStatus(),
-            outputDir = _opt.ResolveOutputDir(),
-            speedUnit = _opt.ResolveSpeedUnit(),
-        };
+        return new RecorderStatus(
+            State: _state.ToString().ToLowerInvariant(),
+            Warning: _warning,
+            Telemetry: live,
+            Obs: new ObsStatus(_obs.Enabled, _obs.Connected, _obs.Recording, _obs.ObsVersion, _obs.LastError),
+            Session: session,
+            Last: _last,
+            Race: _race?.Snapshot(),
+            Quality: BuildQualityStatus(),
+            Scene: BuildSceneStatus(),
+            OutputDir: _opt.ResolveOutputDir(),
+            SpeedText: live.SpeedKmh is double kmh ? DisplayUnits.SpeedText(kmh, _opt.ResolveSpeedUnit()) : null);
     }
 
-    private object QualityStatus()
+    private QualityStatus BuildQualityStatus()
     {
         _quality.RefreshProfilesIfStale();
         var known = _quality.KnownProfiles;
-        return new
-        {
-            selected = _quality.SelectedPreset,
-            presets = QualityPresets.All.Select(p => new
-            {
-                id = p.Id, name = p.DisplayName, height = p.Height, fps = p.Fps, mbPerMin = p.MbPerMin, note = p.DisplayNote,
-                // OBS にあるプロファイル(日本語・英語どちらの名前でも)。無ければ今の言語で作る名前
-                profile = (known == null ? null : p.FindProfile(known)) ?? p.ProfileName,
-                // OBS にプロファイルがあるか(OBS 未接続で分からなければ null)
-                ready = known == null ? (bool?)null : p.FindProfile(known) != null,
-            }),
-        };
+        return new QualityStatus(
+            _quality.SelectedPreset,
+            QualityPresets.All.Select(p => new QualityPresetStatus(
+                p.Id, p.DisplayName, p.Height, p.Fps, p.MbPerMin, p.DisplayNote,
+                Profile: (known == null ? null : p.FindProfile(known)) ?? p.ProfileName,
+                Ready: known == null ? null : p.FindProfile(known) != null)).ToList());
     }
 
-    private object? SceneStatus()
+    private SceneStatus? BuildSceneStatus()
     {
         if (_scene == null) return null;
         _scene.RefreshScenesIfStale();
-        return new
-        {
-            selected = _scene.SelectedScene,
-            current = _scene.CurrentScene,       // OBS で今選んでいる(プログラムの)シーン。未接続なら null
-            scenes = _scene.KnownScenes,         // OBS の上からの順。未接続なら null
-        };
+        return new SceneStatus(_scene.SelectedScene, _scene.CurrentScene, _scene.KnownScenes);
     }
 
     public bool IsActive => _state != SessionState.Idle;

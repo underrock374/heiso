@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- 名前空間は Fh6.Player のまま。Fh6.Player.App にすると、WPF の App クラス(Fh6.Player.App)とぶつかる -->
+    <RootNamespace>Fh6.Player</RootNamespace>
+  </PropertyGroup>
+
+  <!-- 再生アプリの ViewModel(画面の状態と操作の流れ)。WPF と WebView2 を参照しない(docs/architecture.md のルール 1) -->
+  <ItemGroup>
+    <ProjectReference Include="..\Fh6.Core\Fh6.Core.csproj" />
+  </ItemGroup>
+
+</Project>

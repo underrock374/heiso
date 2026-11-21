@@ -16,8 +16,7 @@ public static class PlayerLog
     private static readonly object Lock = new();
     private static string? _file;
 
-    public static string Dir { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HEISO", "Player", "logs");
+    public static string Dir { get; } = PlayerPaths.LogsDir;
 
     /// <summary>Windows がクラッシュダンプを置く場所(Windows エラー報告のローカルダンプが有効な PC だけ)</summary>
     public static string CrashDumpDir { get; } = Path.Combine(
